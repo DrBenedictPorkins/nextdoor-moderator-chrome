@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nextdoor Moderator Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-icon">⚖</div>
+      <div class="header-text">
+        <h1>Nextdoor Moderator</h1>
+        <p class="subtitle">AI-Powered Moderation Assistant</p>
+      </div>
+    </header>
+
+    <div class="status-section">
+      <div class="status-indicator">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Not configured</span>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="section-title">Configuration</div>
+
+      <div class="form-group">
+        <label for="api-provider">API Provider</label>
+        <select id="api-provider">
+          <option value="">Select provider…</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">API Key</label>
+        <input type="password" id="api-key" placeholder="Paste your API key…">
+        <small>Stored locally in your browser — never transmitted to third parties</small>
+      </div>
+
+      <div class="form-group">
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="">Select a provider first…</option>
+        </select>
+      </div>
+
+      <button id="save-config" class="btn btn-primary">Save Configuration</button>
+
+      <div id="validation-status" class="validation-status"></div>
+    </div>
+
+    <div class="usage-section">
+      <div class="section-title">How to Use</div>
+      <ol>
+        <li><span>Configure your API settings above and save</span></li>
+        <li><span>On a flagged post, click <strong>⚖ AI Review</strong> for a vote recommendation</span></li>
+        <li><span>On any post, click <strong>📄 Post Panel</strong> to preview the thread or chat with AI</span></li>
+      </ol>
+    </div>
+
+    <footer>
+      <p class="version">Version …</p>
+      <a id="view-guidelines" href="#">⚖ View Guidelines sent to LLM</a>
+    </footer>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

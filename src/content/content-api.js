@@ -1393,7 +1393,6 @@ async function createContentOverlay(result) {
   headerBar.innerHTML = `
     <span style="color: #f9fafb; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">Moderation Review</span>
     <div style="display: flex; align-items: center; gap: 8px;">
-      <button id="view-post-btn" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #d1d5db; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;" title="Hide overlay to view original post">View Post</button>
       <button id="copy-all-btn" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #d1d5db; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;" title="Copy post tree + AI decision to clipboard">Copy All</button>
       <button id="close-overlay" style="background: none; border: none; font-size: 20px; line-height: 1; cursor: pointer; color: #9ca3af; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">&times;</button>
     </div>
@@ -1433,6 +1432,8 @@ async function createContentOverlay(result) {
         <button id="dismiss-cache-banner" style="background: none; border: none; cursor: pointer; color: #1565c0; font-size: 14px;">&times;</button>
       </div>
     ` + savedReview.analysisHtml;
+    // Heal cache poisoned by the old bug: keep only the banner we just prepended
+    analysisContainer.querySelectorAll('#cache-banner').forEach((b, i) => { if (i > 0) b.remove(); });
     // Dismiss banner handler
     analysisContainer.querySelector('#dismiss-cache-banner')?.addEventListener('click', () => {
       analysisContainer.querySelector('#cache-banner')?.remove();
@@ -1473,7 +1474,14 @@ async function createContentOverlay(result) {
   const saveCurrentState = async () => {
     const ctx = additionalContextTextarea?.value.trim() || '';
     const analysisEl = overlay.querySelector('#ai-analysis-container');
-    const html = analysisEl?.innerHTML || '';
+    let html = '';
+    if (analysisEl) {
+      // Strip the cache banner before persisting — otherwise it gets baked into
+      // the saved HTML and a new one is prepended on every reopen (stacking up).
+      const clone = analysisEl.cloneNode(true);
+      clone.querySelectorAll('#cache-banner').forEach(n => n.remove());
+      html = clone.innerHTML;
+    }
     if (ctx || html) {
       await savePostReview(postId, { additionalContext: ctx, analysisHtml: html });
     }
@@ -1489,54 +1497,6 @@ async function createContentOverlay(result) {
   // Close button handler
   const closeBtn = overlay.querySelector('#close-overlay');
   closeBtn?.addEventListener('click', removeOverlay);
-
-  // View Post toggle: collapses overlay so the user can read the original post
-  const viewPostBtn = overlay.querySelector('#view-post-btn');
-  let overlayCollapsed = false;
-  let savedOverlayStyle = '';
-  let footerWasVisible = false;
-  viewPostBtn?.addEventListener('click', () => {
-    overlayCollapsed = !overlayCollapsed;
-    if (overlayCollapsed) {
-      savedOverlayStyle = overlay.style.cssText;
-      footerWasVisible = voteFooter.style.display !== 'none';
-      backdrop.style.opacity = '0';
-      backdrop.style.pointerEvents = 'none';
-      scrollWrapper.style.display = 'none';
-      voteFooter.style.display = 'none';
-      resizeHandle.style.display = 'none';
-      overlay.style.cssText = `
-        position: fixed;
-        top: 12px;
-        right: 12px;
-        width: auto;
-        max-width: 340px;
-        border-radius: 10px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.35);
-        z-index: 2147483647;
-        display: flex;
-        flex-direction: column;
-        background: #111827;
-      `;
-      headerBar.style.borderRadius = '10px';
-      viewPostBtn.textContent = 'Resume Review';
-      viewPostBtn.style.background = 'rgba(99,102,241,0.3)';
-      viewPostBtn.style.borderColor = 'rgba(99,102,241,0.6)';
-      viewPostBtn.style.color = '#c7d2fe';
-    } else {
-      backdrop.style.opacity = '';
-      backdrop.style.pointerEvents = '';
-      scrollWrapper.style.display = '';
-      voteFooter.style.display = footerWasVisible ? 'block' : 'none';
-      resizeHandle.style.display = 'block';
-      overlay.style.cssText = savedOverlayStyle;
-      headerBar.style.borderRadius = '12px 12px 0 0';
-      viewPostBtn.textContent = 'View Post';
-      viewPostBtn.style.background = 'rgba(255,255,255,0.1)';
-      viewPostBtn.style.borderColor = 'rgba(255,255,255,0.2)';
-      viewPostBtn.style.color = '#d1d5db';
-    }
-  });
 
   // Click outside to close (click on backdrop)
   backdrop.addEventListener('click', removeOverlay);
@@ -2113,7 +2073,8 @@ function showVoteFooter(analysisText, contentId) {
     </div>
     <textarea id="nd-vote-comment" rows="2" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-family:system-ui,sans-serif; font-size:13px; color:#374151; resize:vertical; box-sizing:border-box; margin-bottom:8px;">${commentText}</textarea>
     <div id="nd-variations-list" style="display:none; margin-bottom:10px; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;"></div>
-    <button id="nd-submit-vote" style="width:100%; padding:14px; background:#111827; color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; font-family:system-ui,sans-serif; letter-spacing:-0.01em;">Submit Vote</button>
+    <button id="nd-submit-vote" style="width:100%; padding:14px; background:#111827; color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; font-family:system-ui,sans-serif; letter-spacing:-0.01em;">📋 Copy Comment</button>
+    <div style="margin-top:10px; padding:9px 11px; background:#f3f4f6; border-radius:7px; font-size:11.5px; color:#4b5563; line-height:1.5; font-family:system-ui,sans-serif;">Copy the comment, then cast your <strong>${voteConfig[vote].label.replace(/^[^ ]+ /, '')}</strong> vote directly on Nextdoor and paste the comment into its note field.</div>
     <div id="nd-vote-error" style="display:none; color:#c62828; font-size:12px; margin-top:8px; text-align:center;"></div>
   `;
 
@@ -2127,10 +2088,15 @@ function showVoteFooter(analysisText, contentId) {
   const variationsList = footer.querySelector('#nd-variations-list');
   const commentTextarea = footer.querySelector('#nd-vote-comment');
 
+  // Keep the floating chip in step with the footer's live state (vote + comment),
+  // so on dismiss it shows what the moderator actually selected, not the original AI pick.
+  const syncChip = () => updateRecommendationChip(selectedVote, commentTextarea?.value || '');
+
   if (variationsBtn) variationsBtn.disabled = !originalComment.trim();
 
   commentTextarea?.addEventListener('input', () => {
     if (variationsBtn) variationsBtn.disabled = !commentTextarea.value.trim();
+    syncChip();
   });
 
   footer.querySelectorAll('.nd-vote-pill').forEach(btn => {
@@ -2144,6 +2110,7 @@ function showVoteFooter(analysisText, contentId) {
       }
       if (variationsBtn) variationsBtn.disabled = !commentTextarea?.value?.trim();
       if (variationsList) variationsList.style.display = 'none';
+      syncChip();
     });
   });
 
@@ -2173,6 +2140,7 @@ function showVoteFooter(analysisText, contentId) {
             if (commentTextarea) commentTextarea.value = btn.textContent;
             variationsList.style.display = 'none';
             variationsBtn.textContent = '🎲 Variations';
+            syncChip();
           });
         });
       } else {
@@ -2191,36 +2159,33 @@ function showVoteFooter(analysisText, contentId) {
     const submitBtn = footer.querySelector('#nd-submit-vote');
     const errorDiv = footer.querySelector('#nd-vote-error');
     const comment = footer.querySelector('#nd-vote-comment')?.value?.trim() || '';
-
-    submitBtn.disabled = true;
-    submitBtn.style.opacity = '0.7';
-    submitBtn.textContent = 'Submitting...';
     errorDiv.style.display = 'none';
 
-    const success = await autoVote(selectedVote, contentId, comment);
-    if (success) {
-      showVoteToast(selectedVote, false);
+    try {
+      await navigator.clipboard.writeText(comment);
+      showVoteToast(selectedVote);
+      submitBtn.textContent = '✓ Copied — vote on Nextdoor';
+      submitBtn.disabled = true;
+      submitBtn.style.opacity = '0.7';
       setTimeout(() => {
-        document.getElementById('nextdoor-moderator-backdrop')?.remove();
-        document.getElementById('nextdoor-moderator-overlay')?.remove();
-        const nextBtn = Array.from(document.querySelectorAll('button.blocks-1659weo'))
-          .find(b => b.textContent.trim() === 'Next');
-        if (nextBtn) nextBtn.click();
-      }, 900);
-    } else {
-      errorDiv.textContent = 'Submission failed (403) — please vote manually on Nextdoor.';
+        submitBtn.textContent = '📋 Copy Comment';
+        submitBtn.disabled = false;
+        submitBtn.style.opacity = '1';
+      }, 1800);
+    } catch (_) {
+      errorDiv.textContent = 'Copy failed — select the comment text and copy it manually.';
       errorDiv.style.display = 'block';
-      submitBtn.disabled = false;
-      submitBtn.style.opacity = '1';
-      submitBtn.textContent = 'Submit Vote';
     }
   });
+
+  // Mirror the current footer state onto the floating chip (initial = recommendation)
+  syncChip();
 }
 
 /**
  * Show a brief toast notification for auto-vote results
  */
-function showVoteToast(voteLabel, wasAuto) {
+function showVoteToast(voteLabel) {
   const colors = { keep: '#166534', remove: '#991b1b', 'maybe remove': '#374151' };
   const icons = { keep: '✓', remove: '✗', 'maybe remove': '−' };
   const color = colors[voteLabel.toLowerCase()] || '#374151';
@@ -2247,7 +2212,7 @@ function showVoteToast(voteLabel, wasAuto) {
   `;
   toast.innerHTML = `
     <span style="color:${color}; font-size:18px; font-weight:700;">${icon}</span>
-    <span>${wasAuto ? 'Auto-voted' : 'Voted'}: <strong>${voteLabel.charAt(0).toUpperCase() + voteLabel.slice(1)}</strong></span>
+    <span>Comment copied — vote <strong>${voteLabel.charAt(0).toUpperCase() + voteLabel.slice(1)}</strong> on Nextdoor</span>
   `;
 
   if (!document.getElementById('nd-toast-style')) {
@@ -2260,6 +2225,78 @@ function showVoteToast(voteLabel, wasAuto) {
   document.body.appendChild(toast);
   setTimeout(() => { toast.style.transition = 'opacity 0.3s'; toast.style.opacity = '0'; }, 2500);
   setTimeout(() => toast.remove(), 2900);
+}
+
+const REC_CHIP_COLORS = {
+  keep:           { bg: '#166534', label: 'Keep',         emoji: '✓' },
+  remove:         { bg: '#991b1b', label: 'Remove',       emoji: '✗' },
+  'maybe remove': { bg: '#374151', label: 'Maybe Remove', emoji: '−' },
+};
+
+/** Hide and empty the floating recommendation chip. */
+function clearRecommendationChip() {
+  const chip = document.getElementById('nd-rec-chip');
+  if (!chip) return;
+  chip.style.display = 'none';
+  chip.innerHTML = '';
+}
+
+/**
+ * Show the last AI recommendation on the floating widget.
+ * Collapsed: a colored vote pill. Click reveals the suggested comment + Copy.
+ * vote: 'keep' | 'remove' | 'maybe remove'; comment: suggested note (may be empty).
+ */
+function updateRecommendationChip(vote, comment) {
+  const chip = document.getElementById('nd-rec-chip');
+  if (!chip) return;
+
+  const cfg = REC_CHIP_COLORS[(vote || '').toLowerCase()];
+  if (!cfg) { clearRecommendationChip(); return; }
+
+  const note = (comment || '').trim();
+  const hasNote = note.length > 0;
+
+  chip.innerHTML = `
+    <button id="nd-rec-vote" title="${hasNote ? 'Show suggested comment' : 'Recommended vote'}" style="
+      width:100%; padding:9px 13px; border:none; border-radius:8px; cursor:${hasNote ? 'pointer' : 'default'};
+      font-family:system-ui,sans-serif; font-size:13px; font-weight:700; color:white;
+      background:${cfg.bg}; display:flex; align-items:center; gap:8px; box-sizing:border-box; text-align:left;">
+      <span style="font-size:15px;">${cfg.emoji}</span>
+      <span>${cfg.label}</span>
+      ${hasNote ? '<span id="nd-rec-caret" style="margin-left:auto; font-size:11px; opacity:0.85; font-weight:600;">▾ note</span>' : ''}
+    </button>
+    ${hasNote ? `
+    <div id="nd-rec-comment" style="display:none; background:#1f2937; border-radius:8px; padding:10px; box-sizing:border-box;">
+      <div id="nd-rec-comment-text" style="font-size:13.5px; color:#f9fafb; font-weight:500; line-height:1.55; white-space:pre-wrap; margin-bottom:10px; padding:9px 11px; background:#111827; border-left:3px solid ${cfg.bg}; border-radius:6px; font-family:system-ui,sans-serif;"></div>
+      <button id="nd-rec-copy" style="width:100%; padding:8px; border:none; border-radius:6px; background:#374151; color:white; font-size:12px; font-weight:600; cursor:pointer; font-family:system-ui,sans-serif;">📋 Copy comment</button>
+    </div>` : ''}
+  `;
+  chip.style.display = 'flex';
+
+  if (!hasNote) return;
+
+  // Set the note via textContent (LLM output is untrusted — never inject as HTML)
+  chip.querySelector('#nd-rec-comment-text').textContent = note;
+
+  const voteBtn = chip.querySelector('#nd-rec-vote');
+  const commentBox = chip.querySelector('#nd-rec-comment');
+  const caret = chip.querySelector('#nd-rec-caret');
+  voteBtn.addEventListener('click', () => {
+    const open = commentBox.style.display === 'block';
+    commentBox.style.display = open ? 'none' : 'block';
+    caret.textContent = open ? '▾ note' : '▴ note';
+  });
+
+  const copyBtn = chip.querySelector('#nd-rec-copy');
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(note).then(() => {
+      copyBtn.textContent = '✓ Copied';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy comment'; }, 1500);
+    }).catch(() => {
+      copyBtn.textContent = 'Copy failed';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy comment'; }, 1500);
+    });
+  });
 }
 
 function styleVoteSuggestion(analysisText) {
@@ -2323,6 +2360,9 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const existingBackdrop = document.getElementById('nextdoor-moderator-backdrop');
     existingOverlay?.remove();
     existingBackdrop?.remove();
+
+    // Clear the stale recommendation chip — this is a different post now
+    clearRecommendationChip();
 
     sendResponse({ success: true });
     return;
@@ -2585,6 +2625,12 @@ function injectWidget() {
     createContentOverlay(result);
   });
   widget.appendChild(reviewBtn);
+
+  // ── Recommendation chip (filled after AI Review, cleared on next/prev post) ──
+  const recChip = document.createElement('div');
+  recChip.id = 'nd-rec-chip';
+  recChip.style.cssText = 'display:none; flex-direction:column; gap:4px;';
+  widget.appendChild(recChip);
 
   // ── Post Panel button ──
   const panelBtn = mkBtn('nd-export-btn', '📄 Post Panel', 'Expand all replies, then preview and chat about this post');

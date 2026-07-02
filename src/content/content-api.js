@@ -2364,6 +2364,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Clear the stale recommendation chip — this is a different post now
     clearRecommendationChip();
 
+    // Drop stale expanded-post state + any open Post Panel
+    expandedPostData = null;
+    document.getElementById('nd-export-preview')?.remove();
+
     sendResponse({ success: true });
     return;
   }
@@ -2644,15 +2648,29 @@ function injectWidget() {
     await expandAllReplies(panelBtn);
 
     panelBtn.textContent = '📄 Loading…';
-    const resp = await browser.runtime.sendMessage({ action: 'getLastExpandedPost' }).catch(() => null);
-    const post = resp?.post || expandedPostData;
+    // Identify the open post from the DOM (React fiber), then pull it from cache.
+    const { postId } = await getExpandedPostIdFromDom();
+    const resp = postId
+      ? await browser.runtime.sendMessage({ action: 'getPostById', postId }).catch(() => null)
+      : null;
+    const post = resp?.post || null;
 
     panelBtn.disabled = false;
     panelBtn.style.cursor = 'pointer';
     panelBtn.style.opacity = '1';
     panelBtn.textContent = '📄 Post Panel';
 
-    if (post) showExportPreview(post);
+    if (post) {
+      showExportPreview(post);
+    } else if (!postId) {
+      // Couldn't read the post id from the page — Nextdoor likely changed the DOM.
+      panelBtn.textContent = '⚠ Can’t identify this post';
+      setTimeout(() => { panelBtn.textContent = '📄 Post Panel'; }, 2800);
+    } else {
+      // Have the id but nothing captured for it — reload to refetch.
+      panelBtn.textContent = '⚠ No data — reload page';
+      setTimeout(() => { panelBtn.textContent = '📄 Post Panel'; }, 2800);
+    }
   });
   widget.appendChild(panelBtn);
 
@@ -2693,6 +2711,11 @@ function injectWidget() {
       panelBtn.textContent = '📄 Post Panel';
       panelBtn.style.opacity = '1';
       widget.style.display = 'flex';
+      // Expanded post closed — wipe its data so the panel can never show a
+      // previous post the next time one is opened (esp. news-feed expands that
+      // fire no ExpandedFeedItemStory capture to refresh it).
+      expandedPostData = null;
+      browser.runtime.sendMessage({ action: 'clearExpandedPost' }).catch(() => {});
     }
   }, 500);
 }
@@ -2915,6 +2938,26 @@ function showExportPreview(post) {
   });
 }
 
+// Ask the MAIN-world net-hook for the currently-expanded post's id (read from the
+// React fiber — invisible to this isolated world). Resolves { postId, shareId } or
+// { postId: null } if it can't be determined (DOM/naming changed).
+function getExpandedPostIdFromDom() {
+  return new Promise(resolve => {
+    const reqId = 'ndeid-' + Date.now();
+    let settled = false;
+    const finish = val => { if (!settled) { settled = true; window.removeEventListener('message', handler); resolve(val); } };
+    const handler = e => {
+      if (e.source !== window) return;
+      const d = e.data;
+      if (!d || d.type !== 'ndExpandedId' || d.reqId !== reqId) return;
+      finish({ postId: d.postId || null, shareId: d.shareId || null });
+    };
+    window.addEventListener('message', handler);
+    window.postMessage({ source: 'ndm-get-expanded-id', reqId }, '*');
+    setTimeout(() => finish({ postId: null }), 1000);
+  });
+}
+
 async function expandAllReplies(statusBtn) {
   const overlayOpen = () => !!document.querySelector('button[aria-label="Close expanded post"]');
   if (!overlayOpen()) return { error: 'No overlay open' };
@@ -2932,20 +2975,27 @@ async function expandAllReplies(statusBtn) {
       );
 
   const delay = ms => new Promise(r => setTimeout(r, ms));
+  const nodeCount = () => document.getElementsByTagName('*').length;
   let totalClicked = 0;
+  let commentStalls = 0;
   const maxRounds = 30;
 
   for (let round = 0; round < maxRounds; round++) {
     if (!overlayOpen()) break;
 
     // PRIORITY 1: Load all top-level comment batches first so all threads are in DOM
-    // before the reply expansion pass begins
-    const commentLoader = getSeeMoreComments();
+    // before the reply expansion pass begins.
+    // Nextdoor sometimes leaves "See more comments" rendered even when there is
+    // nothing left to load — clicking it is a no-op. Detect that (no DOM growth)
+    // and stop after 2 dead clicks instead of hammering it for all 30 rounds.
+    const commentLoader = commentStalls < 2 ? getSeeMoreComments() : null;
     if (commentLoader) {
       if (statusBtn) statusBtn.textContent = `⏳ more comments…`;
+      const before = nodeCount();
       commentLoader.click();
       totalClicked++;
       await delay(800);
+      if (nodeCount() <= before) commentStalls++; else commentStalls = 0;
       continue;
     }
 
@@ -2978,6 +3028,14 @@ browser.runtime.onMessage.addListener((message) => {
     if (document.getElementById('nd-export-preview')) {
       refreshExportPreview(expandedPostData);
     }
+  }
+  if (message.action === 'expandedPostCleared') {
+    // A new post is being expanded — wipe stale state and any open panel so it
+    // can't display the previous post.
+    expandedPostData = null;
+    document.getElementById('nd-export-preview')?.remove();
+    const w = document.getElementById('nd-widget');
+    if (w) w.style.display = 'flex';
   }
 });
 
@@ -3087,27 +3145,28 @@ function buildMarkdownFromPostData(post, pageUrl) {
       commentLines.push('');
 
       const replyEdges = edge.node?.replies?.edgesV2 || edge.node?.replies?.edges;
-      // Use pageInfo.totalCount (accurate, reflects merges) instead of stale afterCount
-      const replyTotal = edge.node?.replies?.pageInfo?.totalCount;
+      const replyPage = edge.node?.replies?.pageInfo;
       const replyLoaded = replyEdges?.length || 0;
-      if (replyTotal != null && replyTotal > replyLoaded) {
-        missingCount += replyTotal - replyLoaded;
-      } else if (replyTotal == null) {
-        // Fall back to afterCount only when pageInfo.totalCount isn't available
-        const afterCount = edge.node?.replies?.afterCount || 0;
-        if (afterCount > replyLoaded) missingCount += afterCount - replyLoaded;
+      // Nextdoor's totalCount is unreliable (over-counts deleted/ghost replies —
+      // e.g. reports 12 when 11 exist), so only flag missing replies when the API
+      // says there is genuinely another page to fetch.
+      if (replyPage?.hasNextPage) {
+        const replyTotal = replyPage.totalCount;
+        missingCount += (replyTotal != null && replyTotal > replyLoaded) ? (replyTotal - replyLoaded) : 1;
       }
       walkComments(replyEdges, depth + 1);
     });
   }
 
   const topEdges = post.comments?.pagedComments?.edgesV2 || post.comments?.pagedComments?.edges;
-  const topTotal = post.comments?.pagedComments?.pageInfo?.totalCount;
+  const topPage = post.comments?.pagedComments?.pageInfo;
   const topLoaded = topEdges?.length || 0;
   walkComments(topEdges, 0);
-  // Add any missing top-level comments
-  if (topTotal != null && topTotal > topLoaded) {
-    missingCount += topTotal - topLoaded;
+  // Only flag missing top-level comments when the API says another page exists —
+  // totalCount alone is unreliable (Nextdoor over-counts).
+  if (topPage?.hasNextPage) {
+    const topTotal = topPage.totalCount;
+    missingCount += (topTotal != null && topTotal > topLoaded) ? (topTotal - topLoaded) : 1;
   }
 
   if (commentLines.length > 0) {

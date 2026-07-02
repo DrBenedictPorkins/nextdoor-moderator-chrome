@@ -776,6 +776,9 @@ function parseAnalysisResponse(apiResponse) {
 browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   console.log('[Background] Received message:', message);
 
+  // Restore per-tab caches if the SW was restarted since the last message.
+  await ensureHydrated();
+
   if (message.action === 'analyzeContent') {
     try {
       const { originalPost, flaggedContent, conversationThread, additionalContext, imageUrls } = message.data;
@@ -869,6 +872,27 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     return { success: !!entry, post: entry?.post || null };
   }
 
+  if (message.action === 'getPostById') {
+    const tabId = sender.tab?.id;
+    const cache = postDataCache.get(tabId);
+    let entry = null;
+    if (cache && message.postId != null) {
+      const id = String(message.postId);
+      entry = cache.get(id)
+        || cache.get(id.replace(/^post_/, ''))  // stored numeric?
+        || cache.get('post_' + id);              // stored prefixed?
+    }
+    return { success: !!entry, post: entry?.post || null };
+  }
+
+  if (message.action === 'clearExpandedPost') {
+    // The expanded-post modal closed — forget which post was open so a later
+    // open can't serve this stale one.
+    lastExpandedPostId.delete(sender.tab?.id);
+    persistTab(sender.tab?.id);
+    return;
+  }
+
   if (message.action === 'saveConfig') {
     try {
       await saveConfig(message.config);
@@ -895,9 +919,21 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   // script, which forwards them here so the same caching/notification logic runs.
   if (message.action === 'gqlRequestStarted') {
     const tabId = sender.tab?.id;
-    if (tabId != null && typeof message.url === 'string' && message.url.includes('/ModerationFeed')) {
+    if (tabId == null || typeof message.url !== 'string') return;
+
+    if (message.url.includes('/ModerationFeed')) {
+      lastExpandedPostId.delete(tabId);
       browser.tabs.sendMessage(tabId, { action: 'moderationFeedLoading' }).catch(() => {});
     }
+
+    if (message.url.includes('/ExpandedFeedItemStory')) {
+      // A new post is being expanded — drop the stale "which post is expanded"
+      // pointer so the Post Panel can't serve the previous post. The matching
+      // gqlResponseCaptured (ExpandedFeedItemStory) repopulates it with the real one.
+      lastExpandedPostId.delete(tabId);
+      browser.tabs.sendMessage(tabId, { action: 'expandedPostCleared' }).catch(() => {});
+    }
+    persistTab(tabId);
     return;
   }
 
@@ -913,6 +949,7 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         const feedItem = data?.data?.feedItem;
         if (feedItem?.post) {
           lastExpandedPostId.set(tabId, String(feedItem.post.id));
+          persistTab(tabId);
           browser.tabs.sendMessage(tabId, {
             action: 'expandedPostReady',
             post: feedItem.post,
@@ -947,6 +984,70 @@ const postDataCache = new Map(); // Map<tabId, Map<postId, {post, feedItem}>>
 
 // Tracks which post the user most recently expanded per tab
 const lastExpandedPostId = new Map(); // Map<tabId, postId string>
+
+// ---- Persistence to storage.session (survives service-worker restarts) ----
+// The in-memory Maps above are the working set; we mirror the Post Panel pieces
+// (postDataCache + lastExpandedPostId) into chrome.storage.session so an idled-out
+// SW can rehydrate them instead of returning "No Data for this post". Session
+// storage is in-memory (cleared on browser close) and shared extension-wide, so
+// we key by tab. Evicted per tab on tab close (see tabs.onRemoved below).
+const sessionKey = tabId => `ndTab_${tabId}`;
+
+function serializeTab(tabId) {
+  const cache = postDataCache.get(tabId);
+  const keys = {};   // cacheKey -> uid (post id), collapses aliases to one stored post
+  const posts = {};  // uid -> slim entry
+  if (cache) {
+    for (const [k, entry] of cache) {
+      const uid = String(entry?.post?.id ?? k);
+      keys[k] = uid;
+      if (!posts[uid]) posts[uid] = { post: entry.post, legacyAnalyticsId: entry.feedItem?.legacyAnalyticsId ?? null };
+    }
+  }
+  return { keys, posts, lastExpandedPostId: lastExpandedPostId.get(tabId) ?? null };
+}
+
+function persistTab(tabId) {
+  if (tabId == null) return;
+  // Fire-and-forget; in-memory state is authoritative during the SW's life.
+  browser.storage.session.set({ [sessionKey(tabId)]: serializeTab(tabId) }).catch(() => {});
+}
+
+let _hydrated = null;
+function ensureHydrated() {
+  if (!_hydrated) _hydrated = (async () => {
+    let all;
+    try { all = await browser.storage.session.get(null); } catch { return; }
+    for (const [key, blob] of Object.entries(all || {})) {
+      if (!key.startsWith('ndTab_') || !blob) continue;
+      const tabId = Number(key.slice('ndTab_'.length));
+      // Rebuild with shared references: aliases pointing at the same uid share
+      // one post object, so later PagedComments merges update every alias.
+      const entryByUid = {};
+      for (const [uid, slim] of Object.entries(blob.posts || {})) {
+        entryByUid[uid] = { post: slim.post, feedItem: { legacyAnalyticsId: slim.legacyAnalyticsId } };
+      }
+      const map = new Map();
+      for (const [k, uid] of Object.entries(blob.keys || {})) {
+        if (entryByUid[uid]) map.set(k, entryByUid[uid]);
+      }
+      if (map.size && !postDataCache.has(tabId)) postDataCache.set(tabId, map);
+      if (blob.lastExpandedPostId != null && !lastExpandedPostId.has(tabId)) {
+        lastExpandedPostId.set(tabId, blob.lastExpandedPostId);
+      }
+    }
+  })();
+  return _hydrated;
+}
+ensureHydrated(); // start rehydration as soon as the SW spins up
+
+// Drop a tab's cached posts when it closes (analog of the page-reload wipe).
+browser.tabs.onRemoved.addListener(tabId => {
+  postDataCache.delete(tabId);
+  lastExpandedPostId.delete(tabId);
+  capturedApiData.delete(tabId);
+  browser.storage.session.remove(sessionKey(tabId)).catch(() => {});
+});
 
 function cachePostsFromResponse(tabId, data) {
   const entries = [];
@@ -997,6 +1098,7 @@ function cachePostsFromResponse(tabId, data) {
     if (!postDataCache.has(tabId)) postDataCache.set(tabId, new Map());
     const cache = postDataCache.get(tabId);
     entries.forEach(([key, val]) => cache.set(key, val));
+    persistTab(tabId);
   }
 }
 
@@ -1055,6 +1157,9 @@ function mergePagedComments(tabId, data) {
     }
     findAndMerge(post.comments?.pagedComments?.edgesV2);
   }
+
+  // The cached post object was mutated with newly-merged replies — re-persist.
+  persistTab(tabId);
 
   // Only notify content script if this is still the active expanded post
   if (lastExpandedPostId.get(tabId) === postId) {

@@ -126,4 +126,36 @@
       }
     })();
   });
+
+  // ----- Expanded-post id reader (React fiber, MAIN world only) -----
+  // The isolated-world content script can't see React's __reactFiber$ expandos,
+  // so it asks us for the currently-expanded post id. We walk the fiber up from
+  // the "Close expanded post" button to the nearest post object.
+  window.addEventListener('message', function (e) {
+    if (e.source !== window) return;
+    var d = e.data;
+    if (!d || d.source !== 'ndm-get-expanded-id') return;
+
+    var out = { type: 'ndExpandedId', reqId: d.reqId, postId: null, shareId: null };
+    try {
+      var start = document.querySelector('button[aria-label="Close expanded post"]');
+      var fiberKey = start && Object.keys(start).find(function (k) {
+        return k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0;
+      });
+      var f = fiberKey ? start[fiberKey] : null;
+      var depth = 0;
+      while (f && depth < 60) {
+        var p = f.memoizedProps;
+        var pid = p && p.post && p.post.id != null ? String(p.post.id) : null;
+        if (pid && (/^(post_|sharedPost_)/.test(pid) || /^\d+$/.test(pid))) {
+          out.postId = pid;
+          out.shareId = p.post.shareId || null;
+          break;
+        }
+        f = f.return;
+        depth++;
+      }
+    } catch (_) {}
+    window.postMessage(out, '*');
+  });
 })();

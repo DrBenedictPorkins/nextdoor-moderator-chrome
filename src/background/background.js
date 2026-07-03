@@ -344,14 +344,16 @@ ${NEXTDOOR_GUIDELINES}`;
 }
 
 async function callLLMChat(question, markdown, history = []) {
-  const systemPrompt = `You are an expert on Nextdoor community guidelines helping a moderator evaluate posts and comments.
+  const systemPrompt = `You are a sharp, knowledgeable assistant helping a Nextdoor moderator work through a specific post and its comment thread. Answer the moderator's ACTUAL question directly and usefully — summarizing, comparing, drafting, analyzing, or making best-effort inferences from the thread.
 
-CRITICAL RULES:
+RULES:
 - Be direct and concise. No praise, no filler, no preamble.
-- When asked whether something violates guidelines, cite the specific guideline text that applies (or doesn't).
-- "Keep" is the default when in doubt — only recommend removal if a specific guideline is clearly breached.
+- Answer the question that was asked. Do NOT redirect to the guidelines unless the question is actually about moderation.
+- For analytical or speculative asks (inferring tone, intent, demographics, etc. from what people wrote), give your best-effort read and note it's an inference — don't refuse just because it isn't certain.
 - Genuinely update your position when presented with a valid argument. Do NOT restate the same conclusion with different words.
-- If the content clearly does NOT violate guidelines, say so plainly and explain why.
+- Only when the question IS about whether to keep or remove content: cite the specific guideline that applies (or doesn't); "Keep" is the default when in doubt; if it clearly does not violate, say so plainly.
+
+The Nextdoor community guidelines, for when a moderation question comes up:
 
 ${NEXTDOOR_GUIDELINES}`;
 

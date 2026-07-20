@@ -301,8 +301,11 @@ CRITICAL RULES:
 - Answer the question that was asked. It may be about the content itself, its tone, who wrote it, the context, the people involved, or anything else — not necessarily about removal. Do NOT reframe every question as a keep/remove guideline verdict.
 - Only discuss guideline violations or removal when the moderator is actually asking about that, or when it is genuinely the point of their question. Guidelines are reference material below, not the lens for every answer.
 - No praise, no filler, no "thank you for sharing". Be direct and concise.
+- When you assert something as a fact or a basis for a recommendation, back it with a specific, checkable reference: quote or point to the exact guideline clause, or point to specific text in the post. Do not present your own inference or a general pattern ("this is common in scams") as if it were a guideline rule.
+- If the moderator asks for a concrete threshold, number, or definition (e.g. "what counts as high pay") and no such threshold exists in the guidelines or the post, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
+- If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
 - Genuinely update your position when the moderator presents a valid argument. Do NOT restate the same hedged conclusion with different words.
-- It is fine to give an opinion, an observation, or a "I can't tell for certain, but here's what I notice" answer when that is what the question calls for.
+- It is fine to give an opinion, an observation, or a "I can't tell for certain, but here's what I notice" answer when that is what the question calls for — say so once, plainly, and move on.
 
 OUTPUT FORMAT:
 - Answer directly in 2-4 sentences max.
@@ -350,6 +353,9 @@ RULES:
 - Be direct and concise. No praise, no filler, no preamble.
 - Answer the question that was asked. Do NOT redirect to the guidelines unless the question is actually about moderation.
 - For analytical or speculative asks (inferring tone, intent, demographics, etc. from what people wrote), give your best-effort read and note it's an inference — don't refuse just because it isn't certain.
+- When you assert something as a fact or a basis for a recommendation, back it with a specific, checkable reference: quote or point to the exact guideline clause, or point to specific text in the post/thread. Do not present your own inference or a general pattern ("this is common in scams") as if it were a guideline rule.
+- If the moderator asks for a concrete threshold, number, or definition and no such threshold exists in the guidelines or the thread, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
+- If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
 - Genuinely update your position when presented with a valid argument. Do NOT restate the same conclusion with different words.
 - Only when the question IS about whether to keep or remove content: cite the specific guideline that applies (or doesn't); "Keep" is the default when in doubt; if it clearly does not violate, say so plainly.
 
@@ -530,19 +536,26 @@ NOTE: If the moderator's context contains opinions, leading questions, or sugges
   // Extract moderation details
   const moderationDetails = flaggedContent?.moderationDetails || {};
 
-  // Build report tags (allegation only — no names, no opinions)
+  // Build report tags + the reporters' stated reasons (no names). The free-text
+  // note is often the most specific signal for what was flagged and why.
   let reportSummary = '';
   if (moderationDetails.reports && moderationDetails.reports.length > 0) {
     const tags = [];
+    const notes = [];
     moderationDetails.reports.forEach((report) => {
       if (report.type === 'individual_report' && report.reportType) {
         if (!tags.includes(report.reportType)) tags.push(report.reportType);
+        const note = (report.additionalNote || '').trim();
+        if (note && !notes.includes(note)) notes.push(note);
       } else if (report.type === 'row' && report.reason) {
         if (!tags.includes(report.reason)) tags.push(report.reason);
       }
     });
-    if (tags.length > 0) {
-      reportSummary = `\n\nALLEGED VIOLATION (what reporters flagged — may be incorrect, evaluate independently):\n${tags.map(t => `- "${t}"`).join('\n')}\n`;
+    if (tags.length > 0 || notes.length > 0) {
+      reportSummary = `\n\nALLEGED VIOLATION (what reporters flagged — may be incorrect, evaluate independently):\n`
+        + tags.map(t => `- "${t}"`).join('\n')
+        + (notes.length > 0 ? `${tags.length ? '\n' : ''}Reporter's stated reason:\n${notes.map(n => `- "${n}"`).join('\n')}` : '')
+        + '\n';
     }
   }
 
@@ -628,7 +641,7 @@ For each category below, assess whether the flagged content violates it:
 Categories to check:
 - Respectfulness: personal attacks, public shaming of a private individual, threats, OR overall tone that mocks/belittles/demeans a specific neighbor — evaluate the full message in context, not individual words; mark Borderline if tone is ambiguous, Valid only if mocking intent is clear
 - Discrimination: racism, sexism, homophobia, or other bias against a protected group
-- Harmful activity: dangerous information, sharing someone's private address/personal details, fraud, spam
+- Harmful activity: dangerous information, sharing someone's private address/personal details, fraud, spam (NOTE: a commercial/business offer is NOT spam if the post or comment it replies to explicitly asked for that service or a recommendation — solicited offers are permitted; unsolicited promotion in the main feed is not)
 - Topic placement: national politics/religion posted in the main feed outside a dedicated group
 
 Step 2 - MAKE YOUR VOTE DECISION:

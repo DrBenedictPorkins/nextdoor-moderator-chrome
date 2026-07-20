@@ -1325,7 +1325,7 @@ async function createContentOverlay(result) {
           🤖 Analyze with AI
         </button>
         <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6b7280; cursor: pointer; user-select: none;">
-          <input type="checkbox" id="include-thread-ctx" style="width: 14px; height: 14px; cursor: pointer; accent-color: #111827;">
+          <input type="checkbox" id="include-thread-ctx" checked style="width: 14px; height: 14px; cursor: pointer; accent-color: #111827;">
           Include thread context <span style="font-weight: 400; color: #9ca3af;">(send full conversation thread to AI)</span>
         </label>
       </div>
@@ -1732,7 +1732,7 @@ async function createContentOverlay(result) {
     }
 
     // Send to background script with additional context and image URLs
-    const includeThread = overlay.querySelector('#include-thread-ctx')?.checked ?? false;
+    const includeThread = overlay.querySelector('#include-thread-ctx')?.checked ?? true;
     browser.runtime.sendMessage({
       action: 'analyzeContent',
       data: {

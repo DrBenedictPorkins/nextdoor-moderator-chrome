@@ -20,6 +20,17 @@ const CONFIG = {
   model: 'gpt-4', // Default model
 };
 
+// Reasoning-tier models (OpenAI o-series and the entire GPT-5 family; Anthropic
+// Opus 5+/Sonnet 5+) reject the `temperature` parameter outright (400 error) —
+// only send it to the classic chat models below that still support sampling
+// controls. Keep this in sync with the model lists in popup.js.
+const MODELS_SUPPORTING_TEMPERATURE = new Set([
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+  'gpt-4o',
+  'gpt-4o-mini',
+]);
+
 // Nextdoor Community Guidelines (simplified - expand as needed)
 const NEXTDOOR_GUIDELINES = `
 ## Nextdoor Community Guidelines
@@ -183,7 +194,7 @@ NOT ALLOWED:
   - Repeatedly posting the same or similar content
   - Posting unoriginal/templated content with no personalization or original commentary
   - Posts that are grammatically incorrect, use all caps, rely on a variety of hashtags, @mentions, emojis, or contain only a link without context.
-  - Posting more than one promotional post per week from a personal account
+  - Self-promotion from a personal account — see GUIDELINE 6 below for the full rule
 - Phishing, including any attempt to gain access to someone’s account or personal information
 - Selling, soliciting, or offering any illegal goods or services
 
@@ -212,6 +223,37 @@ NOT ALLOWED:
 ### Misinformation
 
 Nextdoor is committed to neighbor safety and reducing the spread of misinformation on critical topics like elections and health emergencies. Misinformation reports go to Nextdoor staff, not community moderators, for review.
+
+---
+
+## GUIDELINE 6: SELF-PROMOTION FROM A PERSONAL ACCOUNT
+Source: https://help.nextdoor.com/s/article/Self-Promotion-using-your-Personal-Account?language=en_US
+
+Nextdoor no longer allows self-promotional content from a personal (neighbor) account — it must come from a Business Page instead. Self-promotion means posts, comments, and direct messages intended to acquire customers for a business, professional service, or commercial opportunity in exchange for money. This applies to everyone promoting products or services, including freelancers, side hustles, and home-based businesses.
+
+NOT ALLOWED FROM A PERSONAL ACCOUNT:
+- Advertising services, events, or commercial offers in the main feed or in For Sale & Free
+- Replying to a neighbor's request for a recommendation (e.g. "Who is a great plumber?") in order to recommend YOUR OWN business. Being asked does NOT make the reply allowed — it must come from the business's own profile, or from another neighbor.
+- Sending unsolicited DMs to neighbors to promote or advertise your services
+- Posts from family, staff, or close friends on behalf of a business — treated as business promotion, whether or not the relationship is disclosed
+
+ALLOWED:
+- Recommending SOMEONE ELSE's business or service provider, as long as there is no relationship, referral benefit, or other conflict of interest
+- Garage sales, lemonade stands, farmers markets, cultural celebrations and festivals, and community social events — one-time, non-commercial local happenings
+- Nonprofit, volunteer, and community fundraiser posts (e.g. school bake sales, scouting fundraisers) — permitted once a week
+- Casual neighbor-to-neighbor activity, per the test below
+
+### Casual service provider vs. business
+
+Someone is a CASUAL provider (allowed from a personal account) only if ALL of the following are true:
+- They post about the service or items no more than once a month from their personal account
+- ...in either the main feed OR For Sale & Free, but not both
+- They post under their own name — not a business name, logo, or brand
+- They are not registered, licensed, or otherwise formally recognized as a business
+- They offer one or two simple services or a few homemade items — not a full menu or price list. Examples: babysitting, dog walking, lawn mowing, arts and crafts, baked goods
+- They keep everything on Nextdoor — no business website, booking tool, online shop, or other social media accounts used to sell
+
+If ANY of those is not true, they are treated as a business and are expected to promote from a Business Page rather than a personal account.
 
 ---
 
@@ -282,7 +324,12 @@ async function callLLMRaw(systemPrompt, userPrompt, maxTokens = 512) {
     body = JSON.stringify({ model: CONFIG.model, max_tokens: maxTokens, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] });
   } else {
     headers['Authorization'] = `Bearer ${CONFIG.apiKey}`;
-    body = JSON.stringify({ model: CONFIG.model, max_tokens: maxTokens, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], temperature: 0.7 });
+    body = JSON.stringify({
+      model: CONFIG.model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.7 } : {}),
+    });
   }
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
@@ -338,7 +385,12 @@ ${NEXTDOOR_GUIDELINES}`;
 
   const body = isAnthropic
     ? JSON.stringify({ model: CONFIG.model, max_tokens: 600, system: systemPrompt, messages })
-    : JSON.stringify({ model: CONFIG.model, max_tokens: 600, temperature: 0.4, messages: [{ role: 'system', content: systemPrompt }, ...messages] });
+    : JSON.stringify({
+        model: CONFIG.model,
+        max_tokens: 600,
+        ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.4 } : {}),
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+      });
 
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
@@ -382,7 +434,12 @@ ${NEXTDOOR_GUIDELINES}`;
 
   const body = isAnthropic
     ? JSON.stringify({ model: CONFIG.model, max_tokens: 800, system: systemPrompt, messages })
-    : JSON.stringify({ model: CONFIG.model, max_tokens: 800, temperature: 0.4, messages: [{ role: 'system', content: systemPrompt }, ...messages] });
+    : JSON.stringify({
+        model: CONFIG.model,
+        max_tokens: 800,
+        ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.4 } : {}),
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+      });
 
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
@@ -450,7 +507,12 @@ Output ONLY a valid JSON array of 6 strings.`;
           { type: 'text', text: textPrompt },
         ]
       : textPrompt;
-    body = JSON.stringify({ model: CONFIG.model, max_tokens: 500, messages: [{ role: 'system', content: sys }, { role: 'user', content: userContent }], temperature: 0.8 });
+    body = JSON.stringify({
+      model: CONFIG.model,
+      max_tokens: 500,
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: userContent }],
+      ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.8 } : {}),
+    });
   }
 
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
@@ -641,7 +703,8 @@ For each category below, assess whether the flagged content violates it:
 Categories to check:
 - Respectfulness: personal attacks, public shaming of a private individual, threats, OR overall tone that mocks/belittles/demeans a specific neighbor — evaluate the full message in context, not individual words; mark Borderline if tone is ambiguous, Valid only if mocking intent is clear
 - Discrimination: racism, sexism, homophobia, or other bias against a protected group
-- Harmful activity: dangerous information, sharing someone's private address/personal details, fraud, spam (NOTE: a commercial/business offer is NOT spam if the post or comment it replies to explicitly asked for that service or a recommendation — solicited offers are permitted; unsolicited promotion in the main feed is not)
+- Harmful activity: dangerous information, sharing someone's private address/personal details, fraud, spam
+- Self-promotion: promoting the author's OWN business, service, or commercial offer from a personal account — in a post, in a comment (INCLUDING a reply to a neighbor asking for a recommendation — being asked does not make it allowed), or in a DM. Recommending someone else's business is allowed. Before marking Valid, apply the casual-service-provider test in Guideline 6: an occasional, under-their-own-name, small-scale neighbor offer (babysitting, lawn mowing, baked goods) is permitted. Mark Borderline when you cannot tell from the content whether the author is a business or a casual neighbor.
 - Topic placement: national politics/religion posted in the main feed outside a dedicated group
 
 Step 2 - MAKE YOUR VOTE DECISION:
@@ -696,7 +759,7 @@ IMPORTANT: Be brief. Your vote MUST match your guideline scan.`;
         content: userContent,
       },
     ],
-    temperature: 0.3,
+    ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.3 } : {}),
   };
 
   console.groupCollapsed('[Background] LLM Request', CONFIG.model);
@@ -796,6 +859,11 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
   if (message.action === 'analyzeContent') {
     try {
+      // The startup loadConfig() at the bottom of this file is not awaited, so on a
+      // cold service-worker start CONFIG can still be empty when this message
+      // arrives — which surfaced as a spurious "API configuration not set".
+      await loadConfig();
+
       const { originalPost, flaggedContent, conversationThread, additionalContext, imageUrls } = message.data;
 
       // Perform analysis with full conversation context, additional context, and images

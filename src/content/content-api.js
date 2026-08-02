@@ -318,7 +318,16 @@ function extractModerationData() {
       authorUrl: post.author?.url || '',
       createdAt: post.createdAt?.asDateTime?.relativeTime || '',
       neighborhood: post.author?.originationNeighborhood?.shortName || '',
+      // Self-promotion detection fields (captured for future use). See background.js
+      // GUIDELINE 6 for context.
+      postType: post.postType ?? null,
+      classified: post.classified ?? null,
+      classifiedInfo: post.classifiedInfo ?? null,
+      localServiceData: post.localServiceData ?? null,
+      authorType: post.author?.type ?? post.author?.authorType ?? null,
     };
+
+    console.log(`[NDM] Self-promo fields for post ${originalPost.id}: postType=${JSON.stringify(originalPost.postType)}, classified=${JSON.stringify(originalPost.classified)}, classifiedInfo=${JSON.stringify(originalPost.classifiedInfo)}, localServiceData=${JSON.stringify(originalPost.localServiceData)}, authorType=${JSON.stringify(originalPost.authorType)}`);
 
     // Extract moderation info with details
     const moderationInfo = {
@@ -365,10 +374,16 @@ function extractModerationData() {
           depth: depth,
           tags: comment.tags || [],  // Store tags array
           imageUrls: commentMediaAttachments.filter(m => m.type === 'PHOTO').map(m => m.url).filter(Boolean),
+          // Self-promotion detection fields (captured for future use). See background.js
+          // GUIDELINE 6 for context.
+          detectedBusiness: comment.detectedBusiness ?? null,
+          authorType: comment.author?.type ?? comment.author?.authorType ?? null,
         };
 
         // Add this comment to the global collection for sibling search
         allComments.push(commentData);
+
+        console.log(`[NDM] Self-promo fields for comment ${commentData.id}: detectedBusiness=${JSON.stringify(commentData.detectedBusiness)}, authorType=${JSON.stringify(commentData.authorType)}`);
 
         // Check if this comment is flagged
         if (comment.moderationInfo?.moderationSummaryV3) {
@@ -1543,15 +1558,57 @@ async function createContentOverlay(result) {
       if (flaggedContent?.createdAt) lines.push(`Posted: ${flaggedContent.createdAt}`);
       lines.push(flaggedContent?.content || '(no text)');
     }
+    // moderationDetails.reports/votes are ordered arrays mixing section headers,
+    // summary rows, and individual entries (see parseModerationSummary) — mirror
+    // formatModerationDetails' filtering so the export matches what's on screen.
+    const isVoteTotalsNoise = (text) => {
+      const matches = [...(text || '').matchAll(/\*\s*(\d+)/g)];
+      return matches.length >= 1 && matches.length <= 3;
+    };
+    const voteLabel = { keep: 'Keep', remove: 'Remove', abstain: 'Maybe Remove', report: 'Report' };
+
     const mod = flaggedContent?.moderationDetails;
-    if (mod?.tags?.length) lines.push(`Tags: ${mod.tags.map(t => `${t.reason} (${t.reporter})`).join(', ')}`);
-    if (mod?.votes) {
-      const v = mod.votes;
-      lines.push(`Votes: Keep ${v.keep || 0} / Remove ${v.remove || 0} / Maybe Remove ${v.abstain || 0} / Report ${v.report || 0}`);
+    if (mod?.totalReports > 0 || mod?.reports?.length > 0) {
+      lines.push('');
+      lines.push(`=== REPORTS (${mod.totalReports} total) ===`);
+      mod.reports.forEach(r => {
+        if (r.type === 'title') {
+          if (r.text !== 'Vote totals') lines.push(`-- ${r.text} --`);
+        } else if (r.type === 'description') {
+          lines.push(r.text);
+        } else if (r.type === 'section') {
+          if (!isVoteTotalsNoise(r.text)) lines.push(`-- ${r.text} --`);
+        } else if (r.type === 'row') {
+          if (!isVoteTotalsNoise(`${r.reason || ''} ${r.count || ''}`)) lines.push(`${r.reason}: ${r.count}`);
+        } else if (r.type === 'individual_report') {
+          let line = `[${voteLabel[r.voteType] || r.voteType}] ${r.reporterName}${r.locationTime ? ` (${r.locationTime})` : ''}`;
+          if (r.reportType) line += ` — ${r.reportType}`;
+          lines.push(line);
+          if (r.additionalNote) lines.push(`  "${r.additionalNote}"`);
+        }
+      });
     }
-    if (mod?.reviewerNotes?.length) {
-      lines.push('Reporter notes:');
-      mod.reviewerNotes.forEach(n => lines.push(`  - ${n}`));
+
+    if (mod?.totalVotes > 0 || mod?.votes?.length > 0) {
+      lines.push('');
+      lines.push(`=== COMMUNITY VOTES (${mod.totalVotes} total) ===`);
+      mod.votes.forEach(v => {
+        if (v.type === 'section') {
+          lines.push(`-- ${v.text} --`);
+        } else if (v.type === 'row') {
+          lines.push(`${v.reason}: ${v.count}`);
+        } else if (v.type === 'individual_vote') {
+          let line = `[${voteLabel[v.voteType] || v.voteType}] ${v.voterName}${v.locationTime ? ` (${v.locationTime})` : ''}`;
+          lines.push(line);
+          if (v.additionalNote) lines.push(`  "${v.additionalNote}"`);
+        }
+      });
+    }
+
+    if (mod?.totalNotes > 0) {
+      lines.push('');
+      lines.push(`=== MODERATOR NOTES (${mod.totalNotes} total) ===`);
+      mod.notes.forEach((n, i) => lines.push(`${i + 1}. ${n.text}`));
     }
 
     const ctx = overlay.querySelector('#additional-context')?.value?.trim();
@@ -1568,7 +1625,13 @@ async function createContentOverlay(result) {
       lines.push(analysisText);
     }
 
-    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    // A single '\n' is a soft break under CommonMark (collapses to a space) —
+    // only a blank line or a "hard break" (two trailing spaces) forces a real
+    // line break. Force one on every non-blank line so this renders correctly
+    // wherever it's pasted, including inside multi-line post/comment content.
+    const withHardBreaks = lines.join('\n').split('\n').map(l => l.length ? l + '  ' : l).join('\n');
+
+    navigator.clipboard.writeText(withHardBreaks).then(() => {
       copyAllBtn.textContent = 'Copied!';
       setTimeout(() => { copyAllBtn.textContent = 'Copy All'; }, 1500);
     });
@@ -1592,6 +1655,20 @@ async function createContentOverlay(result) {
       qaSendBtn?.click();
     }
   });
+
+  // Apply a chat-revised vote + comment to the vote action footer below.
+  // Seeds the footer's per-vote comment memory before clicking, so the pill's own
+  // click handler picks it up — and so it stays remembered if the moderator later
+  // switches to a different vote and back, same as a manually-typed comment would.
+  const applyRevisedVote = (voteLabel, commentText) => {
+    const footer = overlay.querySelector('#nd-vote-footer');
+    const key = voteLabel.toLowerCase();
+    const pillBtn = footer?.querySelector(`.nd-vote-pill[data-vote="${key}"]`);
+    if (!pillBtn) return;
+    if (footer._voteComments) footer._voteComments[key] = commentText;
+    pillBtn.click();
+    footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
 
   const submitQuestion = async () => {
     const question = qaInput?.value?.trim();
@@ -1654,7 +1731,18 @@ async function createContentOverlay(result) {
         const bg = voteBgs[vote] || '#f9fafb';
         const pill = document.createElement('div');
         pill.style.cssText = `margin-top:8px; padding:8px 11px; background:${bg}; border-left:3px solid ${color}; border-radius:0 6px 6px 0; font-size:12px; color:${color}; font-family:system-ui,sans-serif;`;
-        pill.innerHTML = `<strong>Revised: ${vote}</strong> — ${comment}`;
+        pill.innerHTML = `<div><strong>Revised: ${vote}</strong> — ${comment}</div>`;
+        const applyBtn = document.createElement('button');
+        applyBtn.textContent = '↳ Apply to vote';
+        applyBtn.style.cssText = `margin-top:6px; padding:4px 10px; background:none; border:1px solid ${color}; border-radius:6px; font-size:11px; font-weight:600; color:${color}; cursor:pointer; font-family:system-ui,sans-serif;`;
+        applyBtn.addEventListener('click', () => {
+          applyRevisedVote(vote, comment);
+          applyBtn.textContent = '✓ Applied to vote';
+          applyBtn.disabled = true;
+          applyBtn.style.opacity = '0.6';
+          applyBtn.style.cursor = 'default';
+        });
+        pill.appendChild(applyBtn);
         typingBubble.appendChild(pill);
       }
     } catch (err) {
@@ -2081,8 +2169,11 @@ function showVoteFooter(analysisText, contentId) {
   footer.style.display = 'block';
 
   let selectedVote = vote;
-  const originalVote = vote;
-  const originalComment = commentText;
+  // Remembers the last comment (typed, generated, or chat-applied) for each vote,
+  // so switching pills back and forth never silently loses one. Exposed on the
+  // footer element itself so the Q&A chat's "Apply to vote" can pre-seed it.
+  const voteComments = { [vote]: commentText };
+  footer._voteComments = voteComments;
 
   const variationsBtn = footer.querySelector('#nd-variations-btn');
   const variationsList = footer.querySelector('#nd-variations-list');
@@ -2092,9 +2183,10 @@ function showVoteFooter(analysisText, contentId) {
   // so on dismiss it shows what the moderator actually selected, not the original AI pick.
   const syncChip = () => updateRecommendationChip(selectedVote, commentTextarea?.value || '');
 
-  if (variationsBtn) variationsBtn.disabled = !originalComment.trim();
+  if (variationsBtn) variationsBtn.disabled = !commentText.trim();
 
   commentTextarea?.addEventListener('input', () => {
+    voteComments[selectedVote] = commentTextarea.value;
     if (variationsBtn) variationsBtn.disabled = !commentTextarea.value.trim();
     syncChip();
   });
@@ -2106,7 +2198,7 @@ function showVoteFooter(analysisText, contentId) {
         b.style.cssText = pillStyle(b.dataset.vote, b.dataset.vote === selectedVote);
       });
       if (commentTextarea) {
-        commentTextarea.value = btn.dataset.vote === originalVote ? originalComment : '';
+        commentTextarea.value = voteComments[selectedVote] ?? '';
       }
       if (variationsBtn) variationsBtn.disabled = !commentTextarea?.value?.trim();
       if (variationsList) variationsList.style.display = 'none';

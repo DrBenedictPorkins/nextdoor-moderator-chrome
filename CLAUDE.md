@@ -69,6 +69,21 @@ Bundled entry points (`background.js`, `content-api.js`, `content.js`, `popup.js
 
 `permissions: ["storage"]` only. Hosts are in `host_permissions` (`nextdoor.com`, `anthropic.com`, `openai.com`). No `activeTab`, `webRequest`, `webRequestBlocking`, `tabs`, or `debugger`.
 
+## Downloading a post's video (evidence review)
+
+Nextdoor serves post videos as HLS: the `<video>` tag shows a `blob:` URL, backed by CloudFront-signed `.m3u8`/`.ts` files fetched via MediaSource Extensions — there's no plain downloadable file URL. `scripts/download-nextdoor-video.sh` handles this:
+
+```bash
+./scripts/download-nextdoor-video.sh "<signed main .m3u8 URL>" output.mp4
+```
+
+To get the signed main manifest URL, either watch the Network tab (filter: `m3u8`) while the video plays, or run in the page console:
+```js
+performance.getEntriesByType('resource').find(e => /main-.*\.m3u8/.test(e.name)).name
+```
+
+Why a plain `yt-dlp`/`curl` call on that URL 403s: the top-level manifest lists resolution variants (and each variant lists its `.ts` segments) as bare relative paths with no query string. The CloudFront signature (`Expires`/`Signature`/`Key-Pair-Id`/`Policy`) is a wildcard over the whole video directory (`Policy` `Resource` ends in `/*`), so the same signature from the URL you pass in is valid for every file under it — but resolving a relative path drops the query string, which 403s. The script re-attaches the signature to every sub-manifest/segment reference, picks the highest-bandwidth variant, then muxes with `ffmpeg`. Requires `ffmpeg` and `curl` on `PATH`. Signed URLs expire (see the `Expires` param, a Unix timestamp) — grab a fresh one if it's stale.
+
 ## Store-compliance notes
 
 - No remote code; everything is bundled locally

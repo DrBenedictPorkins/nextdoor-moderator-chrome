@@ -13,16 +13,22 @@ const statusText = document.getElementById('status-text');
 const validationStatus = document.getElementById('validation-status');
 
 // Model configuration for each provider
+// Model IDs are aliases (undated) so they always resolve to the latest snapshot.
 const PROVIDER_MODELS = {
   'openai': [
-    { value: 'gpt-4o',      label: 'GPT-4o (latest)' },
-    { value: 'gpt-4o-mini', label: 'GPT-4o mini' },
-    { value: 'o3',          label: 'o3' },
-    { value: 'o4-mini',     label: 'o4-mini' },
+    { value: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol (flagship)' },
+    { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra (balanced)' },
+    { value: 'gpt-5.6-luna',  label: 'GPT-5.6 Luna (cost-efficient)' },
+    { value: 'gpt-4o',        label: 'GPT-4o' },
+    { value: 'gpt-4o-mini',   label: 'GPT-4o mini' },
+    { value: 'o3',            label: 'o3' },
+    { value: 'o4-mini',       label: 'o4-mini (retiring Oct 23, 2026)' },
   ],
   'anthropic': [
-    { value: 'claude-sonnet-4-6',           label: 'Claude Sonnet 4.6' },
-    { value: 'claude-haiku-4-5',             label: 'Claude Haiku 4.5' },
+    { value: 'claude-opus-5',     label: 'Claude Opus 5 (flagship)' },
+    { value: 'claude-sonnet-5',   label: 'Claude Sonnet 5 (balanced)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5 (cost-efficient)' },
   ]
 };
 

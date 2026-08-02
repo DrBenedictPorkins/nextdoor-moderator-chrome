@@ -32,6 +32,10 @@ npm run build    # Production build → dist/
 4. Click **Load unpacked** and select the `dist/` folder
 5. After each rebuild, click **Reload** (↻) on the extension card
 
+## Branching
+
+`main` is the dev branch — there is no separate `develop`/`dev` branch, locally or on `origin`. All day-to-day work happens directly on `main`. `scripts/cut-release.sh` and `scripts/cut-hotfix-start.sh`/`cut-hotfix-finish.sh` create short-lived branches off `main` for version bumps, merged back into `main` when done.
+
 ## Architecture
 
 ### Network capture (the MV3-specific part)

@@ -11,9 +11,14 @@ import browser from 'webextension-polyfill';
 
 console.log('[Nextdoor Moderator] Background service worker initialized');
 
+// Open the side panel on the toolbar icon click instead of a popup.
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error('[Nextdoor Moderator] Failed to set side panel behavior:', error));
+
 // Enable/disable LLM conversation logging
 
-// Configuration - users should set this via the popup UI
+// Configuration - users should set this via the side panel Settings tab
 const CONFIG = {
   apiKey: '',
   apiEndpoint: '', // e.g., OpenAI, Anthropic, etc.
@@ -23,13 +28,75 @@ const CONFIG = {
 // Reasoning-tier models (OpenAI o-series and the entire GPT-5 family; Anthropic
 // Opus 5+/Sonnet 5+) reject the `temperature` parameter outright (400 error) —
 // only send it to the classic chat models below that still support sampling
-// controls. Keep this in sync with the model lists in popup.js.
+// controls. Keep this in sync with the model lists in src/sidepanel/settings.js.
 const MODELS_SUPPORTING_TEMPERATURE = new Set([
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
   'gpt-4o',
   'gpt-4o-mini',
 ]);
+
+// OpenAI deprecated `max_tokens` on Chat Completions in favour of
+// `max_completion_tokens`, which also counts invisible reasoning tokens. The
+// GPT-5 family and the o-series reject `max_tokens` outright ("Unsupported
+// parameter: 'max_tokens' is not supported with this model"), so every OpenAI
+// request uses the new field. Anthropic is unaffected — `max_tokens` is still
+// its required field, so its branches keep using it.
+function openAiMaxTokens(n) {
+  return { max_completion_tokens: n };
+}
+
+// Extracts the assistant's text from either provider's response shape.
+// Anthropic returns `content` as an array of BLOCKS, and with thinking enabled a
+// `thinking` block can occupy index 0 — `content[0].text` is then undefined and
+// the reply silently becomes an empty string. Always pick the first text block
+// rather than trusting position.
+function extractLLMText(data) {
+  const openAi = data?.choices?.[0]?.message?.content;
+  if (typeof openAi === 'string' && openAi) return openAi;
+  const blocks = data?.content;
+  if (Array.isArray(blocks)) {
+    const textBlock = blocks.find(b => b?.type === 'text' && typeof b.text === 'string');
+    if (textBlock) return textBlock.text;
+  }
+  return '';
+}
+
+// Reasoning depth. Only reasoning-tier models accept an effort parameter, so gate
+// it the same way temperature is gated — sending it to a classic chat model 400s.
+// Keep both sets in sync with the model lists in src/sidepanel/settings.js.
+const ANTHROPIC_EFFORT_MODELS = new Set([
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+]);
+const OPENAI_EFFORT_MODELS = new Set([
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'o3',
+  'o4-mini',
+]);
+
+// Every route here is a short, rubric-driven task: classify content against
+// guidelines supplied in the prompt, or rewrite a sentence. Anthropic's own
+// guidance puts chat/classification/content-generation at `low`. Thinking stays
+// ON deliberately — adaptive thinking spends almost nothing on the clear-cut
+// cases and scales up on the ambiguous ones, which is exactly where a moderator
+// needs the help. Hard-disabling would only save tokens on the hard calls.
+function anthropicEffort(effort = 'low') {
+  return ANTHROPIC_EFFORT_MODELS.has(CONFIG.model) ? { output_config: { effort } } : {};
+}
+function openAiEffort(effort = 'low') {
+  return OPENAI_EFFORT_MODELS.has(CONFIG.model) ? { reasoning_effort: effort } : {};
+}
+
+// Thinking is ON BY DEFAULT on Opus 5 / Sonnet 5 when the `thinking` field is
+// omitted, and max_tokens (Anthropic) / max_completion_tokens (OpenAI) cap
+// thinking AND visible text together. The previous 512-800 budgets left almost
+// nothing for the answer once thinking ran, truncating replies mid-sentence.
+const SHORT_ROUTE_MAX_TOKENS = 2500;
+const ANALYSIS_MAX_TOKENS = 4096;
 
 // Nextdoor Community Guidelines (simplified - expand as needed)
 const NEXTDOOR_GUIDELINES = `
@@ -321,12 +388,13 @@ async function callLLMRaw(systemPrompt, userPrompt, maxTokens = 512) {
     headers['x-api-key'] = CONFIG.apiKey;
     headers['anthropic-version'] = '2023-06-01';
     headers['anthropic-dangerous-direct-browser-access'] = 'true';
-    body = JSON.stringify({ model: CONFIG.model, max_tokens: maxTokens, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] });
+    body = JSON.stringify({ model: CONFIG.model, max_tokens: maxTokens, ...anthropicEffort(), system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] });
   } else {
     headers['Authorization'] = `Bearer ${CONFIG.apiKey}`;
     body = JSON.stringify({
       model: CONFIG.model,
-      max_tokens: maxTokens,
+      ...openAiMaxTokens(maxTokens),
+      ...openAiEffort(),
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
       ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.7 } : {}),
     });
@@ -334,7 +402,7 @@ async function callLLMRaw(systemPrompt, userPrompt, maxTokens = 512) {
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
   const data = await resp.json();
-  return data.choices?.[0]?.message?.content || data.content?.[0]?.text || '';
+  return extractLLMText(data);
 }
 
 async function callLLMQuestion(question, reviewData, analysisText, history = []) {
@@ -352,6 +420,8 @@ CRITICAL RULES:
 - If the moderator asks for a concrete threshold, number, or definition (e.g. "what counts as high pay") and no such threshold exists in the guidelines or the post, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
 - If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
 - Genuinely update your position when the moderator presents a valid argument. Do NOT restate the same hedged conclusion with different words.
+- BEFORE conceding, re-read the guideline text. If a clause does support the original call, quote that clause verbatim and hold the position, explaining what it actually says. Conceding when the text does not support the moderator is as unhelpful as defending an unsupported claim — both leave them with a verdict that isn't grounded in the guidelines. Never change position merely to end a disagreement or because the moderator pushed back confidently.
+- Say plainly which of the two you are doing: either "the guidelines don't support what I said" or "the guidelines do say X" — never blur them.
 - It is fine to give an opinion, an observation, or a "I can't tell for certain, but here's what I notice" answer when that is what the question calls for — say so once, plainly, and move on.
 
 OUTPUT FORMAT:
@@ -365,6 +435,21 @@ ${NEXTDOOR_GUIDELINES}`;
 
   const context = `Post content: "${postContent}"${flaggedContent_ && flaggedContent_ !== postContent ? `\nFlagged content: "${flaggedContent_}"` : ''}${analysisText ? `\n\nInitial AI analysis:\n${analysisText.substring(0, 600)}` : ''}`;
 
+  // Same image-selection rule the analysis uses: the flagged item's own
+  // attachments if it has any, otherwise the original post's. Without this the
+  // follow-up chat was text-only and would (correctly) answer "I can't see images"
+  // about a post the initial analysis had actually looked at.
+  const imageUrls = flaggedContent?.imageUrls?.length > 0
+    ? flaggedContent.imageUrls
+    : (originalPost?.imageUrls || []);
+  const imageBlocks = await buildImageBlocks(imageUrls);
+  const contextText = imageBlocks.length > 0
+    ? `${context}\n\n(The post's image attachments are included with this message.)`
+    : context;
+  const contextContent = imageBlocks.length > 0
+    ? [...imageBlocks, { type: 'text', text: contextText }]
+    : contextText;
+
   const isAnthropic = CONFIG.apiEndpoint.includes('anthropic.com');
   const headers = { 'Content-Type': 'application/json' };
   if (isAnthropic) {
@@ -377,28 +462,64 @@ ${NEXTDOOR_GUIDELINES}`;
 
   // Build message array with history
   const messages = [
-    { role: 'user', content: context },
+    { role: 'user', content: contextContent },
     { role: 'assistant', content: 'Understood. I have reviewed the post and the initial analysis. Ask me anything.' },
     ...history,
     { role: 'user', content: question },
   ];
 
-  const body = isAnthropic
-    ? JSON.stringify({ model: CONFIG.model, max_tokens: 600, system: systemPrompt, messages })
-    : JSON.stringify({
-        model: CONFIG.model,
-        max_tokens: 600,
-        ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.4 } : {}),
-        messages: [{ role: 'system', content: systemPrompt }, ...messages],
-      });
+  let body;
+  if (isAnthropic) {
+    // Prompt caching (prefix match, render order system -> messages). Three
+    // breakpoints, well inside the limit of 4:
+    //   1. system — the guidelines, byte-identical for every question and every
+    //      post, so this entry is shared across the whole session.
+    //   2. the post context + its images — stable for as long as the moderator
+    //      is asking about this post.
+    //   3. the end of the prior conversation — each new question then pays full
+    //      price only for itself, with the history read from cache.
+    // The new question itself is deliberately unmarked: it differs every time, so
+    // marking it would write a fresh entry that is never read.
+    const anthropicMessages = toAnthropicMessages(messages);
+    markCacheBreakpoint(anthropicMessages[0]);
+    if (history.length > 0) markCacheBreakpoint(anthropicMessages[anthropicMessages.length - 2]);
+    body = JSON.stringify({
+      model: CONFIG.model,
+      max_tokens: SHORT_ROUTE_MAX_TOKENS,
+      ...anthropicEffort(),
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: anthropicMessages,
+    });
+  } else {
+    // OpenAI caches automatically for prompts over ~1k tokens — no parameter to
+    // set, it just needs a stable prefix, which the system prompt provides.
+    body = JSON.stringify({
+      model: CONFIG.model,
+      ...openAiMaxTokens(SHORT_ROUTE_MAX_TOKENS),
+      ...openAiEffort(),
+      ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0 } : {}),
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    });
+  }
 
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
   const data = await resp.json();
-  return data.choices?.[0]?.message?.content || data.content?.[0]?.text || '';
+
+  // Cache activity is otherwise invisible — a silent prefix invalidator would just
+  // look like a normal (expensive) request. Log it so misses are actually noticeable.
+  const u = data.usage || {};
+  const cacheRead = u.cache_read_input_tokens ?? u.prompt_tokens_details?.cached_tokens;
+  if (cacheRead !== undefined || u.cache_creation_input_tokens !== undefined) {
+    console.log('[BG] Q&A cache — read:', cacheRead ?? 0,
+      '| written:', u.cache_creation_input_tokens ?? 0,
+      '| uncached input:', u.input_tokens ?? u.prompt_tokens ?? 0);
+  }
+
+  return extractLLMText(data);
 }
 
-async function callLLMChat(question, markdown, history = []) {
+async function callLLMChat(question, markdown, history = [], imageUrls = []) {
   const systemPrompt = `You are a sharp, knowledgeable assistant helping a Nextdoor moderator work through a specific post and its comment thread. Answer the moderator's ACTUAL question directly and usefully — summarizing, comparing, drafting, analyzing, or making best-effort inferences from the thread.
 
 RULES:
@@ -409,6 +530,7 @@ RULES:
 - If the moderator asks for a concrete threshold, number, or definition and no such threshold exists in the guidelines or the thread, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
 - If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
 - Genuinely update your position when presented with a valid argument. Do NOT restate the same conclusion with different words.
+- BEFORE conceding, re-read the guideline text. If a clause does support the original call, quote that clause verbatim and hold the position, explaining what it actually says. Conceding when the text does not support the moderator is as unhelpful as defending an unsupported claim. Never change position merely to end a disagreement or because the moderator pushed back confidently.
 - Only when the question IS about whether to keep or remove content: cite the specific guideline that applies (or doesn't); "Keep" is the default when in doubt; if it clearly does not violate, say so plainly.
 
 The Nextdoor community guidelines, for when a moderation question comes up:
@@ -425,100 +547,76 @@ ${NEXTDOOR_GUIDELINES}`;
     headers['Authorization'] = `Bearer ${CONFIG.apiKey}`;
   }
 
+  // The markdown lists photos as "- Photo: <url>" — a URL is not an image, so
+  // without this the model can only see that a link exists (it said as much when
+  // asked to scan a photo post). Attach the actual bytes alongside the thread.
+  const imageBlocks = await buildImageBlocks(imageUrls);
+  const postContext = `Here is the full post and all its comments:\n\n${markdown}`
+    + (imageBlocks.length > 0 ? `\n\n(The ${imageBlocks.length} image attachment(s) referenced above are included with this message.)` : '');
+
   const messages = [
-    { role: 'user', content: `Here is the full post and all its comments:\n\n${markdown}` },
+    {
+      role: 'user',
+      content: imageBlocks.length > 0
+        ? [...imageBlocks, { type: 'text', text: postContext }]
+        : postContext,
+    },
     { role: 'assistant', content: 'Got it — I have read the full post and all comments. Ask me anything.' },
     ...history,
     { role: 'user', content: question },
   ];
 
-  const body = isAnthropic
-    ? JSON.stringify({ model: CONFIG.model, max_tokens: 800, system: systemPrompt, messages })
-    : JSON.stringify({
-        model: CONFIG.model,
-        max_tokens: 800,
-        ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.4 } : {}),
-        messages: [{ role: 'system', content: systemPrompt }, ...messages],
-      });
-
-  const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
-  if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
-  const data = await resp.json();
-  const text = data.choices?.[0]?.message?.content || data.content?.[0]?.text || '';
-  const usage = data.usage || {};
-  const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? null;
-  const outputTokens = usage.output_tokens ?? usage.completion_tokens ?? null;
-  return { text, inputTokens, outputTokens };
-}
-
-async function callLLMForVariations(currentComment, vote) {
-  const sys = `You are helping a Nextdoor community moderator write a short comment for their ${vote || 'keep'} vote. You output ONLY raw JSON, no markdown, no explanation.`;
-  const user = `Current comment: "${currentComment}"\n\nGenerate exactly 8 variations of this comment. Keep a similar tone and intent but vary the phrasing. Each under 20 words. Output ONLY a valid JSON array of 8 strings. Example: ["comment 1", "comment 2", "comment 3", "comment 4", "comment 5", "comment 6", "comment 7", "comment 8"]`;
-  const raw = await callLLMRaw(sys, user, 600);
-  // Strip markdown code fences if present, then extract JSON array
-  const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-  const match = cleaned.match(/\[[\s\S]*\]/);
-  if (!match) return [];
-  try {
-    const result = JSON.parse(match[0]);
-    return Array.isArray(result) ? result : [];
-  } catch {
-    return [];
-  }
-}
-
-async function callLLMSharpResponses(content, imageUrls = []) {
-  const isAnthropic = CONFIG.apiEndpoint.includes('anthropic.com');
-  const sys = `You are a sharp, unapologetic commenter who calls out bad takes, hidden bias, racism, sexism, classism, and lazy thinking — directly and sarcastically. You don't sugarcoat. Output ONLY a raw JSON array of strings, no markdown, no explanation.
-
-CRITICAL: Every comment you generate MUST comply with the Nextdoor community guidelines below. Do not generate comments that are uncivil, discriminatory, constitute public shaming, or otherwise violate these guidelines — even if the user's raw reaction is heated.
-
-${NEXTDOOR_GUIDELINES}`;
-  const textPrompt = `${content.body ? `Post/context: "${content.body}"\n` : ''}${imageUrls.length > 0 ? '(see image above)\n' : ''}${content.reaction ? `\nThe user's raw reaction: "${content.reaction}"\n\nRephrase their reaction into 6 articulate, sharp comment options that capture their intent but are suited for a public comment. Keep the edge, lose the profanity. Range from pointed to sardonic. Each under 30 words.` : `\nGenerate 6 sharp, pointed responses to this post. Call out any bias, bad logic, or hypocrisy. Range from dry eyeroll to savage takedown. Each under 25 words.`}
-
-Output ONLY a valid JSON array of 6 strings.`;
-
-  const headers = { 'Content-Type': 'application/json' };
   let body;
-
   if (isAnthropic) {
-    headers['x-api-key'] = CONFIG.apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-    headers['anthropic-dangerous-direct-browser-access'] = 'true';
-    const userContent = imageUrls.length > 0
-      ? [
-          ...imageUrls.map(url => {
-            if (url.startsWith('data:')) {
-              const [meta, data] = url.split(',');
-              const mediaType = meta.split(':')[1].split(';')[0];
-              return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
-            }
-            return { type: 'image', source: { type: 'url', url } };
-          }),
-          { type: 'text', text: textPrompt },
-        ]
-      : textPrompt;
-    body = JSON.stringify({ model: CONFIG.model, max_tokens: 500, system: sys, messages: [{ role: 'user', content: userContent }] });
-  } else {
-    headers['Authorization'] = `Bearer ${CONFIG.apiKey}`;
-    const userContent = imageUrls.length > 0
-      ? [
-          ...imageUrls.map(url => ({ type: 'image_url', image_url: { url } })),
-          { type: 'text', text: textPrompt },
-        ]
-      : textPrompt;
+    // Same caching shape as the Review Q&A: the guidelines-free system prompt is
+    // constant, and the thread markdown + its images are stable for as long as
+    // the moderator keeps asking about this post — which "Scan for violations"
+    // plus follow-up questions always does.
+    const anthropicMessages = toAnthropicMessages(messages);
+    markCacheBreakpoint(anthropicMessages[0]);
+    if (history.length > 0) markCacheBreakpoint(anthropicMessages[anthropicMessages.length - 2]);
     body = JSON.stringify({
       model: CONFIG.model,
-      max_tokens: 500,
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: userContent }],
-      ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.8 } : {}),
+      max_tokens: SHORT_ROUTE_MAX_TOKENS,
+      ...anthropicEffort(),
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: anthropicMessages,
+    });
+  } else {
+    body = JSON.stringify({
+      model: CONFIG.model,
+      ...openAiMaxTokens(SHORT_ROUTE_MAX_TOKENS),
+      ...openAiEffort(),
+      ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0 } : {}),
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
     });
   }
 
   const resp = await fetch(CONFIG.apiEndpoint, { method: 'POST', headers, body });
   if (!resp.ok) throw new Error(`LLM error: ${resp.status}`);
   const data = await resp.json();
-  const raw = data.choices?.[0]?.message?.content || data.content?.[0]?.text || '';
+  const text = extractLLMText(data);
+  const usage = data.usage || {};
+  // Now that caching is on, the raw field is no longer the prompt size. Anthropic's
+  // `input_tokens` counts ONLY the uncached remainder, so total = uncached + written
+  // + read; reporting it bare would understate usage the moment the cache starts
+  // hitting. OpenAI's `prompt_tokens` already includes cached tokens, with
+  // `cached_tokens` as a subset breakdown — so it must NOT be summed the same way.
+  const inputTokens = isAnthropic
+    ? (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0)
+    : (usage.prompt_tokens ?? null);
+  const cachedTokens = isAnthropic
+    ? (usage.cache_read_input_tokens ?? 0)
+    : (usage.prompt_tokens_details?.cached_tokens ?? 0);
+  const outputTokens = usage.output_tokens ?? usage.completion_tokens ?? null;
+  return { text, inputTokens, outputTokens, cachedTokens };
+}
+
+async function callLLMForVariations(currentComment, vote) {
+  const sys = `You are helping a Nextdoor community moderator write a short comment for their ${vote || 'keep'} vote. You output ONLY raw JSON, no markdown, no explanation.`;
+  const user = `Current comment: "${currentComment}"\n\nGenerate exactly 8 variations of this comment. Keep a similar tone and intent but vary the phrasing. Each under 20 words. Output ONLY a valid JSON array of 8 strings. Example: ["comment 1", "comment 2", "comment 3", "comment 4", "comment 5", "comment 6", "comment 7", "comment 8"]`;
+  const raw = await callLLMRaw(sys, user, SHORT_ROUTE_MAX_TOKENS);
+  // Strip markdown code fences if present, then extract JSON array
   const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
   const match = cleaned.match(/\[[\s\S]*\]/);
   if (!match) return [];
@@ -558,9 +656,61 @@ async function fetchAndResizeImage(url, maxSize = 512) {
   }
 }
 
+// Resized bytes are reused across requests. Beyond saving the refetch, prompt
+// caching is a byte-exact prefix match — re-encoding the same image per request
+// risks differing bytes and a silent cache miss. Lives for the service worker's
+// lifetime only, which is fine: it's a cost optimisation, not correctness.
+const resizedImageCache = new Map(); // url -> base64
+
+// Images are built as OpenAI-style image_url blocks everywhere; toAnthropicMessages
+// converts them at send time, so there is one conversion path rather than two.
+async function buildImageBlocks(imageUrls = []) {
+  if (imageUrls.length === 0) return [];
+  const b64s = await Promise.all(imageUrls.map(async (url) => {
+    if (resizedImageCache.has(url)) return resizedImageCache.get(url);
+    const b64 = await fetchAndResizeImage(url);
+    if (b64) resizedImageCache.set(url, b64);
+    return b64;
+  }));
+  const resized = b64s.filter(Boolean);
+  return resized.length > 0
+    ? resized.map(b64 => ({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }))
+    : imageUrls.map(url => ({ type: 'image_url', image_url: { url } })); // fallback to raw URL
+}
+
+function toAnthropicMessages(messages) {
+  return messages.map((msg) => {
+    if (!Array.isArray(msg.content)) return msg;
+    return {
+      ...msg,
+      content: msg.content.map((block) => {
+        if (block.type !== 'image_url') return block;
+        const url = block.image_url.url;
+        if (url.startsWith('data:')) {
+          const [header, data] = url.split(',');
+          const mediaType = header.replace('data:', '').replace(';base64', '');
+          return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
+        }
+        return { type: 'image', source: { type: 'url', url } };
+      }),
+    };
+  });
+}
+
+// cache_control attaches to a content BLOCK, so a plain-string message has to be
+// promoted to a block array before it can carry a breakpoint.
+function markCacheBreakpoint(msg) {
+  if (!msg) return;
+  if (typeof msg.content === 'string') {
+    msg.content = [{ type: 'text', text: msg.content, cache_control: { type: 'ephemeral' } }];
+  } else if (Array.isArray(msg.content) && msg.content.length > 0) {
+    msg.content[msg.content.length - 1].cache_control = { type: 'ephemeral' };
+  }
+}
+
 async function analyzeWithLLM(originalPost, flaggedContent, conversationThread = [], additionalContext = '', imageUrls = []) {
   if (!CONFIG.apiKey || !CONFIG.apiEndpoint) {
-    throw new Error('API configuration not set. Please configure in extension popup.');
+    throw new Error('API configuration not set. Please configure in the extension side panel.');
   }
 
   // Build conversation thread text for prompt
@@ -673,8 +823,7 @@ FOCUS YOUR ANALYSIS:
 
 **If the flagged content is an ORIGINAL POST:**
 - Analyze it on its own merits against the guidelines
-
-${NEXTDOOR_GUIDELINES}
+(The full community guidelines are provided in the system prompt.)
 
 ORIGINAL POST (for context only):
 Author: ${originalPost?.author || 'Unknown'}
@@ -694,11 +843,19 @@ ${additionalContextText}${reportSummary}${votesSummary}
 
 YOUR ANALYSIS TASK:
 
+EVIDENCE TEST — apply this BEFORE rating any category "Valid" or "Borderline".
+You must be able to produce BOTH of the following. If you cannot produce both, the category is "Doesn't Apply":
+  (a) A verbatim quote of the guideline clause that prohibits it — the guidelines' actual words, not a paraphrase, not a category name, not a rule you believe exists.
+  (b) A verbatim quote of the flagged content that satisfies that clause AS WRITTEN.
+An inference about what the content "edges toward", "reads as", "could be seen as", "risks", "borders on", or "may suggest" is NOT evidence, and never supports Valid or Borderline. If your reasoning needs one of those phrases, the honest rating is "Doesn't Apply".
+A bullet under a guideline's NOT ALLOWED list is governed by the definition at the top of that guideline — a bullet never reaches content that definition never covered. Read the definition before citing a bullet under it.
+Content is not a violation merely because no guideline explicitly permits it. ALLOWED lists are examples, not a whitelist; if no clause prohibits the content, it is allowed.
+
 Step 1 - SCAN AGAINST EACH GUIDELINE CATEGORY:
 For each category below, assess whether the flagged content violates it:
-• "Valid" = Content clearly violates this guideline
-• "Doesn't Apply" = No violation
-• "Borderline" = Genuinely ambiguous — partially applies but mitigating context exists
+• "Valid" = Content clearly violates this guideline — clause and content quotes both available
+• "Doesn't Apply" = No violation, INCLUDING every case where the evidence test fails
+• "Borderline" = A FACT you cannot determine from the content itself decides it — e.g. you cannot tell whether the author owns the business they recommended, or whether an image shows what the text claims. It is NOT for a clause you are unsure applies, and NOT for content that merely feels uncomfortable. If the clause does not cover the content as written, that is "Doesn't Apply", not Borderline.
 
 Categories to check:
 - Respectfulness: personal attacks, public shaming of a private individual, threats, OR overall tone that mocks/belittles/demeans a specific neighbor — evaluate the full message in context, not individual words; mark Borderline if tone is ambiguous, Valid only if mocking intent is clear
@@ -721,27 +878,21 @@ Step 3 - FORMAT YOUR RESPONSE (be concise, no filler):
 **Guideline Scan:**
 | Category | Assessment | Reasoning |
 |----------|------------|-----------|
-[One row per category. Keep reasoning to 1 short sentence. Omit categories that clearly don't apply.]
+[One row per category. Keep reasoning to 1 short sentence. Omit categories that clearly don't apply. For any row NOT rated "Doesn't Apply", the Reasoning cell must contain the verbatim guideline clause in quotation marks — if you cannot quote one, the row is "Doesn't Apply".]
 
 **Vote Suggestion:** [Keep | Remove | Maybe Remove]
 
-**Reasoning:** [2-3 sentences explaining the vote. Cite the specific guideline NAME — NEVER use internal numbering. Must match your scan.]
+**Reasoning:** [2-3 sentences explaining the vote. Cite the specific guideline NAME — NEVER use internal numbering. Must match your scan. For anything other than Keep, quote the guideline clause and the content that satisfies it; state nothing as a basis that you inferred rather than read.]
 
 **Comment Suggestion:** [1 short sentence a moderator writes to OTHER moderators explaining their vote — NOT a message to the poster. Factual. E.g. "No violation — civil local opinion." or "Reseller commercial activity, not a personal sale."]
 ${hasAdditionalContext ? '\n**Moderator Notes:** [Brief response to moderator context]' : ''}
 
 IMPORTANT: Be brief. Your vote MUST match your guideline scan.`;
 
-  // Resize images before sending to reduce token cost
-  const resizedB64 = imageUrls.length > 0
-    ? (await Promise.all(imageUrls.map(url => fetchAndResizeImage(url)))).filter(Boolean)
-    : [];
+  // Resized (and memoised) to reduce token cost — see buildImageBlocks.
+  const imageBlocks = await buildImageBlocks(imageUrls);
 
   // Build user message content — array (with images) or plain string
-  const imageBlocks = resizedB64.length > 0
-    ? resizedB64.map(b64 => ({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }))
-    : imageUrls.map(url => ({ type: 'image_url', image_url: { url } })); // fallback to raw URL
-
   const userContent = imageBlocks.length > 0
     ? [...imageBlocks, { type: 'text', text: prompt }]
     : prompt;
@@ -752,14 +903,27 @@ IMPORTANT: Be brief. Your vote MUST match your guideline scan.`;
     messages: [
       {
         role: 'system',
-        content: 'You are an expert content moderation assistant for Nextdoor communities. Provide concise, well-formatted recommendations following the exact structure requested. Consider report tags, voting trends, reviewer comments, tone, and guideline violations. Be brief but thorough.',
+        // The guidelines live here rather than in the user prompt so they sit in
+        // the cacheable prefix (render order is system -> messages) and stay
+        // byte-identical across every analysis. In the user prompt they trailed
+        // the per-post images and text, so nothing could cache them and the full
+        // ~4K tokens were re-sent at full price on every single analysis. This
+        // also matches callLLMQuestion/callLLMChat, which already do it this way.
+        content: `You are an expert content moderation assistant for Nextdoor communities. Provide concise, well-formatted recommendations following the exact structure requested. Consider report tags, voting trends, reviewer comments, tone, and guideline violations. Be brief but thorough.
+
+${NEXTDOOR_GUIDELINES}`,
       },
       {
         role: 'user',
         content: userContent,
       },
     ],
-    ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0.3 } : {}),
+    ...(MODELS_SUPPORTING_TEMPERATURE.has(CONFIG.model) ? { temperature: 0 } : {}),
+    // OpenAI-only fields; the Anthropic branch below rebuilds its own body and
+    // ignores these. Previously uncapped — on a reasoning model with 128K max
+    // output that is an unbounded cost risk, not just a slow response.
+    ...openAiMaxTokens(ANALYSIS_MAX_TOKENS),
+    ...openAiEffort(),
   };
 
   console.groupCollapsed('[Background] LLM Request', CONFIG.model);
@@ -781,29 +945,13 @@ IMPORTANT: Be brief. Your vote MUST match your guideline scan.`;
     headers['anthropic-version'] = '2023-06-01';
     headers['anthropic-dangerous-direct-browser-access'] = 'true';
     const systemMsg = requestBody.messages.find(m => m.role === 'system');
-    const userMessages = requestBody.messages.filter(m => m.role !== 'system').map(msg => {
-      // Convert OpenAI-style image_url blocks to Anthropic-style image source blocks
-      if (Array.isArray(msg.content)) {
-        return {
-          ...msg,
-          content: msg.content.map(block => {
-            if (block.type !== 'image_url') return block;
-            const url = block.image_url.url;
-            if (url.startsWith('data:')) {
-              const [header, data] = url.split(',');
-              const mediaType = header.replace('data:', '').replace(';base64', '');
-              return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
-            }
-            return { type: 'image', source: { type: 'url', url } };
-          }),
-        };
-      }
-      return msg;
-    });
+    // Converts OpenAI-style image_url blocks to Anthropic-style image source blocks
+    const userMessages = toAnthropicMessages(requestBody.messages.filter(m => m.role !== 'system'));
     body = JSON.stringify({
       model: requestBody.model,
-      max_tokens: 4096,
-      system: systemMsg?.content || '',
+      max_tokens: ANALYSIS_MAX_TOKENS,
+      ...anthropicEffort(),
+      system: [{ type: 'text', text: systemMsg?.content || '', cache_control: { type: 'ephemeral' } }],
       messages: userMessages,
       temperature: requestBody.temperature,
     });
@@ -838,7 +986,7 @@ IMPORTANT: Be brief. Your vote MUST match your guideline scan.`;
  */
 function parseAnalysisResponse(apiResponse) {
   // Adapt this based on your LLM provider's response format
-  const content = apiResponse.choices?.[0]?.message?.content || apiResponse.content?.[0]?.text || '';
+  const content = extractLLMText(apiResponse);
 
   // For simple one-sentence analysis, just return the text
   return {
@@ -849,7 +997,7 @@ function parseAnalysisResponse(apiResponse) {
 }
 
 /**
- * Handle messages from content script or popup
+ * Handle messages from content script or side panel
  */
 browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   console.log('[Background] Received message:', message);
@@ -869,27 +1017,11 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       // Perform analysis with full conversation context, additional context, and images
       const analysis = await analyzeWithLLM(originalPost, flaggedContent, conversationThread, additionalContext, imageUrls || []);
 
-      // Send results back to content script
-      if (sender.tab) {
-        browser.tabs.sendMessage(sender.tab.id, {
-          action: 'analysisResult',
-          analysis: analysis,
-          model: CONFIG.model,
-          provider: CONFIG.apiEndpoint.includes('anthropic.com') ? 'Anthropic' : 'OpenAI',
-        });
-      }
-
+      // The side panel is the only caller and awaits this response directly, so
+      // there is no separate analysisResult push-back message any more.
       sendResponse({ success: true, analysis: analysis });
     } catch (error) {
       console.error('[Background] Analysis error:', error);
-
-      // Send error to content script
-      if (sender.tab) {
-        browser.tabs.sendMessage(sender.tab.id, {
-          action: 'analysisError',
-          error: error.message,
-        });
-      }
 
       sendResponse({ success: false, error: error.message });
     }
@@ -900,8 +1032,8 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     await loadConfig();
     if (!CONFIG.apiKey || !CONFIG.apiEndpoint) return { success: false, answer: 'No API configured.' };
     try {
-      const { text, inputTokens, outputTokens } = await callLLMChat(message.question, message.markdown, message.history || []);
-      return { success: true, answer: text, inputTokens, outputTokens };
+      const { text, inputTokens, outputTokens, cachedTokens } = await callLLMChat(message.question, message.markdown, message.history || [], message.imageUrls || []);
+      return { success: true, answer: text, inputTokens, outputTokens, cachedTokens };
     } catch (error) {
       return { success: false, answer: 'Error: ' + error.message };
     }
@@ -918,17 +1050,6 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     }
   }
 
-  if (message.action === 'sharpResponses') {
-    await loadConfig();
-    if (!CONFIG.apiKey || !CONFIG.apiEndpoint) return { success: false, responses: [] };
-    try {
-      const responses = await callLLMSharpResponses(message.content, message.imageUrls || []);
-      return { success: true, responses };
-    } catch (error) {
-      return { success: false, responses: [], error: error.message };
-    }
-  }
-
   if (message.action === 'generateCommentVariations') {
     await loadConfig();
     if (!CONFIG.apiKey || !CONFIG.apiEndpoint) return { success: false, error: 'No API configured' };
@@ -940,15 +1061,10 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     }
   }
 
-  if (message.action === 'getPostData') {
-    const tabId = sender.tab?.id;
-    const cache = postDataCache.get(tabId);
-    const postData = cache?.get(String(message.postId));
-    return { success: !!postData, postData: postData || null };
-  }
-
+  // sender.tab is only populated for content-script-originated messages — the side
+  // panel isn't a tab, so it passes its target tabId explicitly instead.
   if (message.action === 'getLastExpandedPost') {
-    const tabId = sender.tab?.id;
+    const tabId = message.tabId ?? sender.tab?.id;
     const postId = lastExpandedPostId.get(tabId);
     const cache = postDataCache.get(tabId);
     const entry = postId ? cache?.get(postId) : null;
@@ -956,7 +1072,7 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   }
 
   if (message.action === 'getPostById') {
-    const tabId = sender.tab?.id;
+    const tabId = message.tabId ?? sender.tab?.id;
     const cache = postDataCache.get(tabId);
     let entry = null;
     if (cache && message.postId != null) {
@@ -968,12 +1084,30 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     return { success: !!entry, post: entry?.post || null };
   }
 
+  if (message.action === 'getModerationFeedData') {
+    const tabId = message.tabId ?? sender.tab?.id;
+    return { data: capturedApiData.get(tabId) || null };
+  }
+
   if (message.action === 'clearExpandedPost') {
     // The expanded-post modal closed — forget which post was open so a later
     // open can't serve this stale one.
-    lastExpandedPostId.delete(sender.tab?.id);
-    persistTab(sender.tab?.id);
+    const tabId = message.tabId ?? sender.tab?.id;
+    lastExpandedPostId.delete(tabId);
+    persistTab(tabId);
+    // Broadcast so an open side panel clears its display too — otherwise it
+    // keeps showing the just-closed post with nothing telling it to stop.
+    browser.runtime.sendMessage({ action: 'expandedPostCleared', tabId }).catch(() => {});
     return;
+  }
+
+  // Relay to the content script — these two need to read/act on the live page
+  // (Nextdoor's rendered DOM), which only the content script can do. The side
+  // panel supplies tabId explicitly since it has no sender.tab of its own.
+  if (message.action === 'runExpandAllReplies' || message.action === 'getExpandedPostId') {
+    const tabId = message.tabId ?? sender.tab?.id;
+    if (tabId == null) return { error: 'No target tab' };
+    return browser.tabs.sendMessage(tabId, { action: message.action });
   }
 
   if (message.action === 'saveConfig') {
@@ -990,12 +1124,6 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     return { guidelines: NEXTDOOR_GUIDELINES };
   }
 
-  if (message.action === 'getConfig') {
-    await loadConfig();
-    sendResponse({ success: true, config: CONFIG });
-    return true;
-  }
-
   // ---- GraphQL traffic captured by the page-context net-hook ----
   // Replaces the Firefox-only webRequest.filterResponseData() interceptor.
   // The MAIN-world net-hook posts response bodies to the isolated content
@@ -1006,7 +1134,14 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
     if (message.url.includes('/ModerationFeed')) {
       lastExpandedPostId.delete(tabId);
-      browser.tabs.sendMessage(tabId, { action: 'moderationFeedLoading' }).catch(() => {});
+      // Drop the previous item's payload the moment a new one is requested —
+      // otherwise getModerationFeedData serves the OLD reported item during the
+      // in-flight window, and the side panel renders the wrong post. This mirrors
+      // content-api.js, which nulls its own `moderationFeedData` on this signal.
+      capturedApiData.delete(tabId);
+      // The side panel's Review tab is the only listener — it has no
+      // content-script presence, so this goes out on runtime.sendMessage.
+      browser.runtime.sendMessage({ action: 'moderationFeedLoading', tabId }).catch(() => {});
     }
 
     if (message.url.includes('/ExpandedFeedItemStory')) {
@@ -1014,7 +1149,12 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       // pointer so the Post Panel can't serve the previous post. The matching
       // gqlResponseCaptured (ExpandedFeedItemStory) repopulates it with the real one.
       lastExpandedPostId.delete(tabId);
-      browser.tabs.sendMessage(tabId, { action: 'expandedPostCleared' }).catch(() => {});
+      // Broadcast to any open side panel — opening a post is a same-tab SPA state
+      // change with no URL change, so tabs.onActivated/onUpdated never fire for
+      // it; this is the only signal the side panel gets that a post just opened.
+      // (Only the side panel needs this — content-api.js no longer builds any
+      // UI off expandedPostReady/expandedPostCleared, so it isn't sent there.)
+      browser.runtime.sendMessage({ action: 'expandedPostCleared', tabId }).catch(() => {});
     }
     persistTab(tabId);
     return;
@@ -1033,10 +1173,11 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         if (feedItem?.post) {
           lastExpandedPostId.set(tabId, String(feedItem.post.id));
           persistTab(tabId);
-          browser.tabs.sendMessage(tabId, {
+          browser.runtime.sendMessage({
             action: 'expandedPostReady',
             post: feedItem.post,
             legacyAnalyticsId: feedItem.legacyAnalyticsId,
+            tabId,
           }).catch(() => {});
         }
       }
@@ -1047,10 +1188,7 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
       if (url.includes('/ModerationFeed')) {
         capturedApiData.set(tabId, data);
-        browser.tabs.sendMessage(tabId, {
-          action: 'moderationDataReady',
-          data: data,
-        }).catch(err => console.error('[Background] Failed to notify content script:', err.message));
+        browser.runtime.sendMessage({ action: 'moderationDataReady', tabId }).catch(() => {});
       }
     } catch (error) {
       // Non-JSON or irrelevant response — ignore
@@ -1244,12 +1382,13 @@ function mergePagedComments(tabId, data) {
   // The cached post object was mutated with newly-merged replies — re-persist.
   persistTab(tabId);
 
-  // Only notify content script if this is still the active expanded post
+  // Only notify the side panel if this is still the active expanded post
   if (lastExpandedPostId.get(tabId) === postId) {
-    browser.tabs.sendMessage(tabId, {
+    browser.runtime.sendMessage({
       action: 'expandedPostReady',
       post: entry.post,
       legacyAnalyticsId: entry.feedItem?.legacyAnalyticsId,
+      tabId,
     }).catch(() => {});
   }
 }

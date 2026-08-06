@@ -79,54 +79,6 @@
     return origSend.apply(this, arguments);
   };
 
-  // ----- Auto-vote bridge -----
-  // The isolated-world content script can't POST to Nextdoor's GraphQL API
-  // (wrong origin -> 403) and can't inject an inline <script> (page CSP blocks
-  // it). So it postMessages a vote request here; this MAIN-world script runs
-  // with the page's origin/cookies and is exempt from the page CSP.
-  window.addEventListener('message', function (e) {
-    if (e.source !== window) return;
-    const d = e.data;
-    if (!d || d.source !== 'ndm-vote-req') return;
-
-    const reqId = d.reqId;
-    (async function () {
-      try {
-        const csrfToken = document.cookie.split(';').map(function (c) { return c.trim(); })
-          .find(function (c) { return c.startsWith('csrftoken='); })
-          ?.split('=')[1];
-        const headers = {
-          'content-type': 'application/json',
-          'x-csrftoken': csrfToken,
-          'x-nd-train': window.RELEASE_TOKEN,
-          'x-nd-uti': sessionStorage.getItem('ndas_tab_id'),
-          'x-nd-request-locale': 'US',
-        };
-        await fetch('https://nextdoor.com/api/gql/ModerationChoicePage?', {
-          method: 'POST', credentials: 'include',
-          headers: Object.assign({}, headers, { 'x-nd-cts': String(Date.now()) }),
-          body: JSON.stringify({
-            operationName: 'ModerationChoicePage',
-            variables: { contentId: d.contentId },
-            extensions: { persistedQuery: { version: 1, sha256Hash: 'ff18fa078558a01359bdf38de65198827a769079fc46afcc32522d67ddf563bf' } },
-          }),
-        });
-        const resp = await fetch('https://nextdoor.com/api/gql/SubmitModerationChoice?', {
-          method: 'POST', credentials: 'include',
-          headers: Object.assign({}, headers, { 'x-nd-cts': String(Date.now()) }),
-          body: JSON.stringify({
-            operationName: 'SubmitModerationChoice',
-            variables: { contentId: d.contentId, choiceId: d.choiceId, notes: d.notes },
-            extensions: { persistedQuery: { version: 1, sha256Hash: 'f567a86818f566d37cdbe574bdbc0c3ae539abdf3b7f2522c315307ff961fc75' } },
-          }),
-        });
-        window.postMessage({ type: 'ndAutoVoteResult', reqId: reqId, success: resp.ok, status: resp.status }, '*');
-      } catch (_) {
-        window.postMessage({ type: 'ndAutoVoteResult', reqId: reqId, success: false, status: 0 }, '*');
-      }
-    })();
-  });
-
   // ----- Expanded-post id reader (React fiber, MAIN world only) -----
   // The isolated-world content script can't see React's __reactFiber$ expandos,
   // so it asks us for the currently-expanded post id. We walk the fiber up from

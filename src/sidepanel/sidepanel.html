@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nextdoor Moderator Assistant</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="sp-container">
+    <header class="sp-header">
+      <div class="sp-header-icon">⚖</div>
+      <div class="sp-header-text">
+        <h1>Nextdoor Moderator</h1>
+        <p class="sp-subtitle" id="sp-model-badge">Not configured</p>
+      </div>
+      <button id="sp-mod-history-top" class="sp-header-btn" title="Open moderation history">🕘 History</button>
+    </header>
+
+    <nav class="sp-tabnav">
+      <button class="sp-tab-btn" data-tab="review" id="sp-tab-review">Review</button>
+      <button class="sp-tab-btn" data-tab="postpanel" id="sp-tab-postpanel">Post Panel</button>
+      <button class="sp-tab-btn" data-tab="settings" id="sp-tab-settings">Settings</button>
+    </nav>
+
+    <section class="sp-offsite" id="sp-offsite" hidden>
+      <div>
+        <div class="sp-offsite-icon">⚖</div>
+        <h2>Nextdoor only</h2>
+        <p>This extension only works on <strong>nextdoor.com</strong>.<br>Open Nextdoor in the active tab to use it.</p>
+      </div>
+    </section>
+
+    <section class="sp-tab-content rv-panel" id="sp-panel-review" hidden>
+      <div class="rv-header">
+        <span id="rv-status">Checking page…</span>
+      </div>
+      <div id="rv-gate" class="pp-view">
+        <div class="pp-gate" id="rv-gate-inner"></div>
+      </div>
+      <div id="rv-content" class="pp-view" hidden></div>
+      <div id="rv-vote-footer" class="rv-vote-footer" hidden></div>
+    </section>
+
+    <section class="sp-tab-content" id="sp-panel-postpanel" hidden>
+      <div class="pp-header">
+        <span id="pp-count">No post loaded</span>
+        <div class="pp-header-actions">
+          <button id="pp-refresh-btn" class="pp-icon-btn" title="Refresh">↻</button>
+        </div>
+      </div>
+      <div id="pp-empty" class="sp-placeholder">Open a post on Nextdoor to see it here.</div>
+      <div id="pp-ready" class="pp-view" hidden>
+        <div class="pp-gate">
+          <button id="pp-preview-btn" class="sp-btn sp-btn-primary">Preview here</button>
+          <p>Expands all replies on the post, then loads the full post and thread into the chat below.</p>
+        </div>
+      </div>
+      <div id="pp-main" class="pp-view pp-chat" hidden>
+        <button id="pp-scan-btn" class="pp-scan-btn" hidden>Scan for violations</button>
+        <div id="pp-chat-messages" class="pp-chat-messages"></div>
+        <div class="pp-chat-inputrow">
+          <textarea id="pp-chat-input" rows="1" placeholder="Ask about this post…"></textarea>
+          <button id="pp-chat-send">Ask</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="sp-tab-content" id="sp-panel-settings" hidden>
+      <div class="sp-status-section">
+        <div class="sp-status-indicator">
+          <span class="sp-status-dot" id="sp-status-dot"></span>
+          <span id="sp-status-text">Not configured</span>
+        </div>
+      </div>
+
+      <div class="sp-config-section">
+        <div class="sp-section-title">Configuration</div>
+
+        <div class="sp-form-group">
+          <label for="sp-api-provider">API Provider</label>
+          <select id="sp-api-provider">
+            <option value="">Select provider…</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </div>
+
+        <div class="sp-form-group">
+          <label for="sp-api-key">API Key</label>
+          <input type="password" id="sp-api-key" placeholder="Paste your API key…">
+          <small>Stored locally in your browser — never transmitted to third parties</small>
+        </div>
+
+        <div class="sp-form-group">
+          <label for="sp-model">Model</label>
+          <select id="sp-model">
+            <option value="">Select a provider first…</option>
+          </select>
+        </div>
+
+        <button id="sp-save-config" class="sp-btn sp-btn-primary">Save Configuration</button>
+
+        <div id="sp-validation-status" class="sp-validation-status"></div>
+      </div>
+
+      <div class="sp-usage-section">
+        <div class="sp-section-title">How to Use</div>
+        <ol>
+          <li><span>Configure your API settings above and save</span></li>
+          <li><span>On a flagged post, use the <strong>Review</strong> tab for a vote recommendation</span></li>
+          <li><span>Click <strong>Copy Comment</strong> to copy the suggested note</span></li>
+          <li><span>Cast your vote on Nextdoor using its own buttons, and paste the note into the comment field</span></li>
+          <li><span>On any post, use the <strong>Post Panel</strong> tab to preview the thread or chat with AI</span></li>
+        </ol>
+        <p class="sp-usage-note">The extension only suggests — <strong>you</strong> cast every vote on Nextdoor yourself.</p>
+      </div>
+
+      <footer class="sp-footer">
+        <p class="sp-version">Version …</p>
+        <a id="sp-view-guidelines" href="#">⚖ View Guidelines sent to LLM</a>
+        <a id="sp-mod-history" href="#">🕘 Mod History ↗</a>
+      </footer>
+    </section>
+  </div>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>

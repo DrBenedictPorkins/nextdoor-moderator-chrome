@@ -5,7 +5,7 @@
 # Usage: ./scripts/cut-release.sh
 #
 # What this does:
-#   1. Abort if working tree is dirty
+#   1. Abort if not on main, or working tree is dirty
 #   2. Find CHANGELOG.md's undated "## [X.Y.Z]" entry for the current
 #      package.json version, stamp it with today's date, and commit that alone
 #   3. Tag that commit as vX.Y.Z — this is the release label
@@ -18,7 +18,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-# ── 1. Verify clean working tree ─────────────────────────────────────────────
+# ── 1. Verify on main with a clean working tree ──────────────────────────────
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" != "main" ]; then
+  echo "Error: Must be on main to cut a release. Currently on '$BRANCH'."
+  echo "main is the dev branch — merge into it first, then run this from main."
+  exit 1
+fi
+
 if ! git diff --quiet HEAD || ! git diff --quiet --cached; then
   echo "Error: Working tree has uncommitted changes. Commit or stash first."
   echo ""

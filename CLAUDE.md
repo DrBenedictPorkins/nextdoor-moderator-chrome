@@ -89,7 +89,9 @@ The same constant feeds every LLM path and the Guidelines page (`getGuidelines`)
 
 ## Permissions
 
-`permissions: ["storage", "sidePanel"]`. Hosts are in `host_permissions` (`nextdoor.com`, `anthropic.com`, `openai.com`). No `activeTab`, `webRequest`, `webRequestBlocking`, `tabs`, or `debugger` — `sidePanel` only gates the side panel UI surface itself, not data access; tab targeting is done via `tabId`s the background service worker already receives for free (`sender.tab.id`) and `tabs.query()`/`tabs.sendMessage()`, neither of which needs the `tabs` permission when scoped to a host already covered by `host_permissions`.
+`permissions: ["storage", "sidePanel", "activeTab"]`. Hosts are in `host_permissions` (`nextdoor.com`, `anthropic.com`, `openai.com`). No `webRequest`, `webRequestBlocking`, `tabs`, or `debugger` — `sidePanel` only gates the side panel UI surface itself, not data access; tab targeting is done via `tabId`s the background service worker already receives for free (`sender.tab.id`) and `tabs.query()`/`tabs.sendMessage()`, neither of which needs the `tabs` permission when scoped to a host already covered by `host_permissions`.
+
+`activeTab` was added for the Review tab's screenshot capture (`startRegionCapture` in background.js) — `chrome.tabs.captureVisibleTab()` requires either `<all_urls>` or `activeTab` (verified against Chrome's own docs; `host_permissions` alone does not satisfy it, confirmed the hard way as a live "Capture failed" bug). Because `activeTab`'s grant is only reliably attached to an actual action-click event handled in the extension's own code (not to the declarative `setPanelBehavior({openPanelOnActionClick:true})` path — see the Chromium bug thread on this), the toolbar icon now opens the panel via an explicit `chrome.action.onClicked` listener calling `chrome.sidePanel.open()` instead.
 
 ## Side panel migration — COMPLETE
 
@@ -107,15 +109,9 @@ Verified clean afterwards: no unused CSS classes, all 8 `format.js` exports used
 
 ## STATE OF WORK — read this first (2026-08-06)
 
-Prepping for `cut-release.sh` and Chrome Web Store submission. Nothing is committed yet — `src/sidepanel/` is entirely untracked and `cut-release.sh` aborts on a dirty tree.
+Prepping for `cut-release.sh` and Chrome Web Store submission. The side panel migration is committed (`f8c3312`, on `feature/violation-scan`); working tree currently has substantial uncommitted work on top of that (screenshot/region-capture attachments for both Review's Additional Context and Post Panel's chat, Review tab persistence removal, per-provider API key storage, this dead-code cleanup pass) — not yet committed, per standing instruction to never commit without explicit go-ahead.
 
-### Blocker: wrong reported reply is analyzed
-
-`review.js` picks `flaggedComments[0]`. `findFlaggedCommentsRecursive` collects **every** comment carrying `moderationInfo.moderationSummaryV3`, so on a post with several reported replies — common — the panel analyzes whichever one sits first in tree order, not the one the moderator is being asked to vote on. Nothing signals the mismatch. `validation.postIsFlagged` has the same shape of bug directly above it: it wins unconditionally, so if the parent post is also reported, every reported reply renders the post instead.
-
-Confirmed from logs, not inferred: Next/Previous *do* refetch, and each response carries `items: 1` — the repeated `post_500404913` was the same parent post with different reported replies, which is correct.
-
-**To fix, we need the field on the feed item that names the reported comment.** Get it from the service-worker console: find a `[Background] Received message:` line with `action: 'gqlResponseCaptured'` and `url: '/api/gql/ModerationFeed?'`, expand it, and read the keys of `data.me.moderationFeed.feedItems[0]` — looking for a comment id, `reportedContent`, `moderationItem`, or a `moderationSummary` on the feed item rather than the post. Do not guess the field name.
+The "wrong reported reply is analyzed" item that used to be listed here turned out to be a misread of the UI, not a real bug — on a post with several reported replies whose bodies look similar in the side panel, it only *looked* like the same one kept rendering. No fix needed.
 
 ### Prompt hardening already applied
 
@@ -125,16 +121,15 @@ Both the analysis and the scan now gate every finding on an **evidence test**: q
 
 ### Remaining before submission
 
-1. **Fix the flagged-reply bug** (above) — the only functional blocker.
-2. **Logging** — 18 `console.log` in `review.js`, 11 in `background.js`; several dump full post bodies and LLM prompts. Put behind a debug flag. `content-api.js` is at zero.
-3. **`docs/store-submission.md` is stale** — still sells a "floating quick-access widget" (deleted), calls Post Panel "an expandable side panel on any open post", says AI Review is "one-click" (it auto-loads), and claims "every recommendation shows which model produced it" — untrue per-recommendation; `background.js` returns the model but no UI renders it on the analysis card. Either display it or reword.
-4. **`README.md`** — same staleness (widget, "Extension Popup", flow section).
-5. **`assets/screenshots/`** — all five predate the side panel; `01-popup-configuration.jpeg` shows a popup that no longer exists. Reviewers compare screenshots to behavior.
-6. **`CHANGELOG.md`** 1.2.0 — documents popup work, never mentions the side panel migration, the single biggest change in the release.
-7. **`PRIVACY.md`** needs a public URL for the listing.
-8. **Open question:** delete `src/content/content.js` (566 lines, unregistered, never shipped)?
+1. **`assets/screenshots/`** — all five predate the side panel; `01-popup-configuration.jpeg` shows a popup that no longer exists. Reviewers compare screenshots to behavior. Not yet redone.
 
-Version is 1.2.0 in both `package.json` and `manifest.json`, unreleased. `dist/` is 204K / 13 files. Package with `(cd dist && zip -r ../nextdoor-moderator-chrome-1.2.0.zip .)` after `cut-release.sh`.
+`PRIVACY.md`'s public URL for the listing: `docs/store-submission.md` now points at `https://github.com/DrBenedictPorkins/nextdoor-moderator-chrome/blob/main/PRIVACY.md` (already on `main`).
+
+`src/content/content.js` (566 lines, unregistered, never shipped) — deleted.
+
+Done as of 2026-08-06: logging tightened (`review.js` 18→2 `console.log`, kept only the two deliberate self-promo field-sampling lines; `background.js` 11→10, dropped the ones that fired on every single message/feed item); `docs/store-submission.md`, `README.md`, and `CHANGELOG.md` rewritten to describe the side panel (no more widget/popup/overlay references).
+
+Version is 1.2.0 in both `package.json` and `manifest.json`, unreleased. Package with `(cd dist && zip -r ../nextdoor-moderator-chrome-1.2.0.zip .)` after `cut-release.sh`.
 
 ## Downloading a post's video (evidence review)
 

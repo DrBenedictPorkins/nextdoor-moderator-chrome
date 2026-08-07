@@ -594,6 +594,44 @@ small {
   color: #c62828;
 }
 
+/* Images that were staged in the attachment tray at send time, moved into the
+   user's own bubble permanently (see addBubble's `images` param). */
+.pp-bubble-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.pp-bubble-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  cursor: zoom-in;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  display: block;
+}
+
+.pp-copy-snippet-btn {
+  display: inline-block;
+  margin-top: 4px;
+  margin-left: 8px;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #374151;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.pp-copy-snippet-btn:hover {
+  background: #e5e7eb;
+}
+
 /* Panel-generated notices (thread changed, refresh will clear the chat). Amber and
    full-width on purpose: neither the user's dark bubble nor the assistant's white
    one, so it never reads as part of the conversation. */
@@ -687,6 +725,26 @@ small {
   flex-shrink: 0;
 }
 
+.pp-capture-btn {
+  padding: 8px 10px !important;
+}
+
+/* Staged screenshots waiting to be sent with the next question — an in-flow
+   tray above the input row (unlike the Review tab's overlay-on-textarea; there
+   is no single "additional context" field here to overlay). Stays attached
+   across the whole conversation (same as the post's own images), not cleared
+   per-message — cleared explicitly (X) or on switching posts. */
+.pp-chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.pp-chat-images:empty {
+  display: none;
+}
+
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 .sp-footer {
   padding: 10px 20px;
@@ -774,6 +832,28 @@ small {
   white-space: pre-wrap;
 }
 
+/* "Brush sweep" load indicator: each word snaps to full highlight, then eases
+   back to normal. Staggering the start across words (see review.js) keeps
+   several mid-fade at once, reading as a brush passing over the text. The
+   card's own border lights up for the whole sweep and fades out once it ends. */
+@keyframes rv-sweep-pulse {
+  0% { background-color: rgba(250, 204, 21, 0.85); border-radius: 3px; }
+  100% { background-color: rgba(250, 204, 21, 0); border-radius: 3px; }
+}
+
+.rv-sweep-word.rv-sweep-hit {
+  animation: rv-sweep-pulse 2.4s ease-out forwards;
+}
+
+.rv-card.rv-sweep-border {
+  border-color: rgba(250, 204, 21, 0.85);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.45);
+}
+
+.rv-card.rv-sweep-border-fading {
+  transition: border-color 1s ease-out, box-shadow 1s ease-out;
+}
+
 .rv-flagged-banner {
   background: #fef2f2;
   border: 1px solid #fecaca;
@@ -805,6 +885,11 @@ small {
   letter-spacing: 0.05em;
 }
 
+.rv-context-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .rv-clear-btn {
   background: none;
   border: 1px solid #d1d5db;
@@ -822,6 +907,10 @@ small {
   color: #374151;
 }
 
+.rv-context-input-wrap {
+  position: relative;
+}
+
 .rv-context-textarea {
   width: 100%;
   padding: 8px 11px;
@@ -834,6 +923,88 @@ small {
   box-sizing: border-box;
   line-height: 1.4;
   min-height: 56px;
+  transition: padding-top 0.15s ease;
+}
+
+/* Overlaid on top of the textarea (see rv-context-input-wrap), not a separate
+   block below it — the textarea's own top padding makes room for it when
+   there are images (toggled in review.js's renderContextImages). */
+.rv-context-images {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.rv-context-images:empty {
+  display: none;
+}
+
+.rv-context-thumb {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1.5px solid #d1d5db;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  pointer-events: auto;
+}
+
+.rv-context-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  cursor: zoom-in;
+}
+
+.rv-context-thumb-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid white;
+  background: rgba(17, 24, 39, 0.85);
+  color: white;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.rv-context-thumb-remove:hover {
+  background: rgba(220, 38, 38, 0.9);
+}
+
+.rv-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  cursor: zoom-out;
+}
+
+.rv-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
 .rv-context-note {
@@ -865,10 +1036,42 @@ small {
 }
 
 .rv-loading {
-  padding: 14px 0;
-  text-align: center;
-  font-size: 12.5px;
-  color: #6b7280;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.rv-spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 2.5px solid #e5e7eb;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: rv-spin 0.8s linear infinite;
+}
+
+@keyframes rv-spin {
+  to { transform: rotate(360deg); }
+}
+
+.rv-loading-dots span {
+  display: inline-block;
+  animation: rv-dot-pulse 1.4s infinite;
+  opacity: 0.2;
+}
+
+.rv-loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.rv-loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes rv-dot-pulse {
+  0%, 80%, 100% { opacity: 0.2; }
+  40% { opacity: 1; }
 }
 
 .rv-error-box {

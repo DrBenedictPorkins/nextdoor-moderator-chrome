@@ -10,38 +10,17 @@ The extension intercepts Nextdoor's moderation GraphQL API in real time, extract
 
 ## Features
 
-- **AI Review** — One-click analysis of any flagged post against Nextdoor's official moderation guidelines, with a clear Keep / Maybe Remove / Remove recommendation and reasoning
-- **Post Panel** — Expandable side panel on any open post: full thread preview, AI chat, and comment drafting
+The extension lives entirely in a Chrome **side panel** (opened via the toolbar icon) with three tabs — it injects nothing into the Nextdoor page itself.
+
+- **Review tab** — On the moderation queue, auto-loads the currently-open flagged post's report data and produces a Keep / Maybe Remove / Remove recommendation with guideline-based reasoning
+- **Post Panel tab** — On any open post: full thread preview, AI chat, a "Scan for violations" pass, and comment drafting
 - **AI Chat** — Ask follow-up questions about a post in context; the full thread is always in scope
 - **Poll Support** — Correctly handles survey/poll posts in addition to standard text posts
-- **Widget** — Floating toolbar with quick access to AI Review, Post Panel, and Mod History
+- **Settings tab** — Configure provider/API key/model without leaving the panel
 - **Per-Provider API Keys** — OpenAI and Anthropic keys stored separately; switching providers restores the correct key automatically
-- **Model Attribution** — Every AI recommendation shows which model and provider generated it
+- **Model Badge** — The panel header always shows which provider and model is active
 - **Privacy-First** — API keys stored locally in `chrome.storage.local`, never transmitted to third parties
-
----
-
-## Screenshots
-
-**Extension Popup** — Configure your LLM provider, API key, and model. Validated before saving.
-
-![Extension Popup](assets/screenshots/01-popup-configuration.jpeg)
-
-**Moderation Overlay** — Reports summary with vote counts, individual reviewer votes, and optional context input before AI analysis.
-
-![Moderation Overlay](assets/screenshots/02-moderation-overlay.jpeg)
-
-**AI Recommendation** — Color-coded verdict card with guideline scan, reasoning, and a ready-to-use comment suggestion. Model and provider shown top-right.
-
-![AI Recommendation](assets/screenshots/03-ai-recommendation.jpeg)
-
-**Post Panel — Preview** — Full thread view with all comments and replies, exportable as markdown.
-
-![Post Panel Preview](assets/screenshots/04-post-panel-preview.jpeg)
-
-**Post Panel — AI Chat** — Ask questions about the post in context. The full thread is always included.
-
-![Post Panel Chat](assets/screenshots/05-post-panel-chat.jpeg)
+- **Copy, don't auto-vote** — The extension only copies a suggested comment to your clipboard; you cast every vote yourself on Nextdoor
 
 ---
 
@@ -72,7 +51,8 @@ The extension intercepts Nextdoor's moderation GraphQL API in real time, extract
    - Select the generated `dist/` folder
 
 4. Configure:
-   - Click the extension icon in the toolbar
+   - Click the extension icon in the toolbar to open the side panel
+   - Switch to the **Settings** tab
    - Select your LLM provider (OpenAI or Anthropic)
    - Paste your API key and choose a model
    - Click **Save Configuration** — the key is validated before saving
@@ -83,23 +63,23 @@ The extension intercepts Nextdoor's moderation GraphQL API in real time, extract
 
 ## Usage
 
-### Moderation Queue
+Open the side panel from the toolbar icon. It tracks whichever Nextdoor tab is active and switches tabs automatically as you navigate.
+
+### Moderation Queue — Review tab
 
 1. Go to `https://nextdoor.com/moderation_feed`
-2. Click a flagged post
-3. Click **⚖ AI Review** in the floating widget — the extension captures the API response automatically
-4. Review the color-coded recommendation (green = Keep, red = Remove, amber = Maybe Remove)
-5. The recommendation includes tag analysis, reasoning, and a suggested moderator comment
+2. Click a flagged post — the panel switches to the **Review** tab and auto-loads the report data as soon as it captures the API response
+3. Click **Analyze with AI** to get a color-coded recommendation (green = Keep, red = Remove, amber = Maybe Remove) with tag analysis and reasoning
+4. Click **Copy Comment** to copy the suggested moderator note, then cast your vote and paste the note directly on Nextdoor — the extension never submits a vote itself
 
-> If you're not on a moderation page, clicking ⚖ AI Review navigates you there.
+### Any Post — Post Panel tab
 
-### Post Panel
+Off the moderation queue, the panel shows the **Post Panel** tab for whatever post is open:
 
-On any open Nextdoor post, click **📄 Post Panel** in the widget to open a side panel with:
-
-- Full thread preview with commenter context
-- **AI Chat** tab — ask questions about the post; the full thread is always included
-- Mod History shortcut
+- **Preview here** — expands all replies and loads the full thread
+- **Scan for violations** — an AI pass over the whole thread against the guidelines
+- AI Chat — ask questions about the post; the full thread is always included
+- Mod History shortcut in the header
 
 ### Additional Context
 
@@ -119,9 +99,9 @@ Keys are validated against the live API before saving. Switching providers resto
 
 ### Supported Models
 
-**OpenAI:** GPT-4o, GPT-4o mini, o3, o4-mini
+**OpenAI:** GPT-5.6 (Sol / Terra / Luna), GPT-4o, GPT-4o mini, o3, o4-mini
 
-**Anthropic:** Claude Sonnet 4.6, Claude Haiku 4.5
+**Anthropic:** Claude Opus 5, Claude Sonnet 5, Claude Sonnet 4.6, Claude Haiku 4.5
 
 ---
 
@@ -132,12 +112,12 @@ Keys are validated against the live API before saving. Switching providers resto
 2. When Nextdoor calls its ModerationFeed GraphQL API, the hook clones the
    response text and window.postMessages it to the isolated content script
 3. The content script forwards the body to the background service worker
-4. The service worker parses moderationSummaryV3: post content, reports, votes, thread
-5. Content script enables the ⚖ AI Review button in the widget
-6. User clicks AI Review → overlay opens with post metadata
-7. User optionally adds context → clicks Analyze with AI
-8. Service worker sends a structured prompt to the configured LLM
-9. LLM response parsed and displayed inline with vote card + reasoning
+4. The service worker parses moderationSummaryV3: post content, reports, votes, thread,
+   and broadcasts moderationDataReady to the side panel
+5. The side panel's Review tab auto-loads the post metadata
+6. User optionally adds context → clicks Analyze with AI
+7. The side panel asks the service worker to send a structured prompt to the LLM
+8. LLM response parsed and displayed inline with vote card + reasoning
 ```
 
 **Why a page-context hook?** Firefox reads GraphQL response bodies with
@@ -153,11 +133,13 @@ post the data back to the extension.
 | Permission | Reason |
 |------------|--------|
 | `storage` | Store API configuration locally |
+| `sidePanel` | Gates the side panel UI surface |
+| `activeTab` | Required by `chrome.tabs.captureVisibleTab()` for the Review tab's screenshot capture |
 | `host_permissions: *://*.nextdoor.com/*` | Run on Nextdoor pages and read moderation data |
 | `host_permissions: *://*.anthropic.com/*` | Anthropic API calls |
 | `host_permissions: *://*.openai.com/*` | OpenAI API calls |
 
-No `activeTab`, `webRequest`, `webRequestBlocking`, or `tabs` permission is requested.
+No `webRequest`, `webRequestBlocking`, or `tabs` permission is requested.
 
 ---
 

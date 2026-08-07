@@ -6,7 +6,8 @@
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "activeTab"
   ],
   "host_permissions": [
     "*://*.nextdoor.com/*",

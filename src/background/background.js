@@ -11,10 +11,20 @@ import browser from 'webextension-polyfill';
 
 console.log('[Nextdoor Moderator] Background service worker initialized');
 
-// Open the side panel on the toolbar icon click instead of a popup.
+// Open the side panel on the toolbar icon click instead of a popup. An explicit
+// onClicked listener is used instead of setPanelBehavior({openPanelOnActionClick})
+// because the activeTab grant (needed by startRegionCapture's captureVisibleTab
+// call — host_permissions alone doesn't satisfy it) is only reliably attached to
+// an actual action-click event handled in the extension's own code; there have
+// been reports of it not attaching when the panel opens via the declarative
+// openPanelOnActionClick path instead.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch((error) => console.error('[Nextdoor Moderator] Failed to set side panel behavior:', error));
+
+chrome.action.onClicked.addListener((tab) => {
+  if (tab.windowId != null) chrome.sidePanel.open({ windowId: tab.windowId });
+});
 
 // Enable/disable LLM conversation logging
 
@@ -405,7 +415,7 @@ async function callLLMRaw(systemPrompt, userPrompt, maxTokens = 512) {
   return extractLLMText(data);
 }
 
-async function callLLMQuestion(question, reviewData, analysisText, history = []) {
+async function callLLMQuestion(question, reviewData, analysisText, history = [], extraImageUrls = []) {
   const { originalPost, flaggedContent } = reviewData || {};
   const postContent = originalPost?.content || '(no text)';
   const flaggedContent_ = flaggedContent?.content || (flaggedContent?.type === 'post' ? postContent : '');
@@ -438,10 +448,16 @@ ${NEXTDOOR_GUIDELINES}`;
   // Same image-selection rule the analysis uses: the flagged item's own
   // attachments if it has any, otherwise the original post's. Without this the
   // follow-up chat was text-only and would (correctly) answer "I can't see images"
-  // about a post the initial analysis had actually looked at.
-  const imageUrls = flaggedContent?.imageUrls?.length > 0
-    ? flaggedContent.imageUrls
-    : (originalPost?.imageUrls || []);
+  // about a post the initial analysis had actually looked at. extraImageUrls are
+  // the moderator's own screenshots captured into Additional Context — the
+  // analysis already sees these (analyzeContent gets them directly), but the
+  // initial-analysis message replayed into this chat's history is text-only, so
+  // without passing them here too, a follow-up question about a captured image
+  // gets "no image was attached" even though one plainly was.
+  const imageUrls = [
+    ...(flaggedContent?.imageUrls?.length > 0 ? flaggedContent.imageUrls : (originalPost?.imageUrls || [])),
+    ...extraImageUrls,
+  ];
   const imageBlocks = await buildImageBlocks(imageUrls);
   const contextText = imageBlocks.length > 0
     ? `${context}\n\n(The post's image attachments are included with this message.)`
@@ -652,6 +668,36 @@ async function fetchAndResizeImage(url, maxSize = 512) {
     return btoa(binary);
   } catch (err) {
     console.warn('[BG] Image resize failed:', url, err.message);
+    return null;
+  }
+}
+
+// Crops a captureVisibleTab() screenshot to the region the moderator dragged
+// out on the page (see startRegionSelection in content-api.js). rect is in CSS
+// viewport pixels; the capture itself is full-resolution, so rect.dpr scales it
+// to the same pixel space before drawing. Same OffscreenCanvas approach as
+// fetchAndResizeImage — no DOM in a service worker.
+async function cropDataUrl(dataUrl, rect) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const dpr = rect.dpr || 1;
+    const sx = Math.max(0, Math.round(rect.x * dpr));
+    const sy = Math.max(0, Math.round(rect.y * dpr));
+    const sw = Math.max(1, Math.min(Math.round(rect.width * dpr), bitmap.width - sx));
+    const sh = Math.max(1, Math.min(Math.round(rect.height * dpr), bitmap.height - sy));
+    const canvas = new OffscreenCanvas(sw, sh);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+    bitmap.close();
+    const outBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
+    const buffer = await outBlob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return `data:image/jpeg;base64,${btoa(binary)}`;
+  } catch (err) {
+    console.warn('[BG] Region capture crop failed:', err.message);
     return null;
   }
 }
@@ -926,12 +972,6 @@ ${NEXTDOOR_GUIDELINES}`,
     ...openAiEffort(),
   };
 
-  console.groupCollapsed('[Background] LLM Request', CONFIG.model);
-  console.log('endpoint:', CONFIG.apiEndpoint);
-  console.log('system:', requestBody.messages.find(m => m.role === 'system')?.content);
-  console.log('user:', requestBody.messages.find(m => m.role === 'user')?.content);
-  console.groupEnd();
-
   // Detect Anthropic API and adapt request format
   const isAnthropic = CONFIG.apiEndpoint.includes('anthropic.com');
 
@@ -973,11 +1013,6 @@ ${NEXTDOOR_GUIDELINES}`,
   const data = await response.json();
   const parsedResponse = parseAnalysisResponse(data);
 
-  console.groupCollapsed('[Background] LLM Response', response.status);
-  console.log('raw:', data);
-  console.log('parsed:', parsedResponse.analysisText);
-  console.groupEnd();
-
   return parsedResponse;
 }
 
@@ -1000,7 +1035,7 @@ function parseAnalysisResponse(apiResponse) {
  * Handle messages from content script or side panel
  */
 browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-  console.log('[Background] Received message:', message);
+  console.log('[Background] Received message:', message.action);
 
   // Restore per-tab caches if the SW was restarted since the last message.
   await ensureHydrated();
@@ -1043,7 +1078,7 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     await loadConfig();
     if (!CONFIG.apiKey || !CONFIG.apiEndpoint) return { success: false, answer: 'No API configured.' };
     try {
-      const answer = await callLLMQuestion(message.question, message.reviewData, message.analysisText, message.history || []);
+      const answer = await callLLMQuestion(message.question, message.reviewData, message.analysisText, message.history || [], message.imageUrls || []);
       return { success: true, answer };
     } catch (error) {
       return { success: false, answer: 'Error: ' + error.message };
@@ -1108,6 +1143,27 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     const tabId = message.tabId ?? sender.tab?.id;
     if (tabId == null) return { error: 'No target tab' };
     return browser.tabs.sendMessage(tabId, { action: message.action });
+  }
+
+  // Also a content-script relay, but unlike the two above it can't just forward
+  // the response — captureVisibleTab() is a background-only API (no chrome.tabs
+  // in a content script), so this orchestrates: ask the page for a selected
+  // region, then screenshot the tab and crop to it.
+  if (message.action === 'startRegionCapture') {
+    const tabId = message.tabId ?? sender.tab?.id;
+    if (tabId == null) return { success: false, error: 'No target tab' };
+    try {
+      const selection = await browser.tabs.sendMessage(tabId, { action: 'startRegionCapture' });
+      if (!selection || selection.cancelled || !selection.rect) return { success: false, cancelled: true };
+      const tab = await browser.tabs.get(tabId);
+      const shot = await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      const dataUrl = await cropDataUrl(shot, selection.rect);
+      if (!dataUrl) return { success: false, error: 'Capture failed' };
+      return { success: true, dataUrl };
+    } catch (err) {
+      console.error('[BG] startRegionCapture failed:', err.message);
+      return { success: false, error: err.message };
+    }
   }
 
   if (message.action === 'saveConfig') {
@@ -1281,7 +1337,6 @@ function cachePostsFromResponse(tabId, data) {
       const entry = { post, feedItem: item };
       if (post.id) entries.push([String(post.id), entry]);
       if (item.legacyAnalyticsId) entries.push([String(item.legacyAnalyticsId), entry]);
-      console.log('[Cache] storing post.id:', post.id, '| legacyAnalyticsId:', item.legacyAnalyticsId, '| author:', post.author?.displayName);
     });
   }
 

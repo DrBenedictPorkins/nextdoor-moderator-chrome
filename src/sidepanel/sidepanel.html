@@ -14,7 +14,7 @@
         <h1>Nextdoor Moderator</h1>
         <p class="sp-subtitle" id="sp-model-badge">Not configured</p>
       </div>
-      <button id="sp-mod-history-top" class="sp-header-btn" title="Open moderation history">🕘 History</button>
+      <button id="sp-mod-history-top" class="sp-header-btn" title="Open moderation history">🕘 Mod History</button>
     </header>
 
     <nav class="sp-tabnav">
@@ -59,7 +59,9 @@
       <div id="pp-main" class="pp-view pp-chat" hidden>
         <button id="pp-scan-btn" class="pp-scan-btn" hidden>Scan for violations</button>
         <div id="pp-chat-messages" class="pp-chat-messages"></div>
+        <div id="pp-chat-images" class="pp-chat-images"></div>
         <div class="pp-chat-inputrow">
+          <button id="pp-capture-btn" type="button" class="pp-capture-btn" title="Capture a region of the page (e.g. a video/GIF frame) to attach">📷</button>
           <textarea id="pp-chat-input" rows="1" placeholder="Ask about this post…"></textarea>
           <button id="pp-chat-send">Ask</button>
         </div>

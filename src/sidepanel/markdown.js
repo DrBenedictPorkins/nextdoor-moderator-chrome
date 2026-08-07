@@ -35,7 +35,6 @@ export function buildMarkdownFromPostData(post, pageUrl) {
   let videoCount = 0;
   const now = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-  console.log('[Export] post keys:', Object.keys(post).join(', '));
   // shareId = "sharedPost_Sd7GRS9wTTcL" → https://nextdoor.com/p/Sd7GRS9wTTcL
   const shareToken = post.shareId?.replace(/^sharedPost_/, '');
   const postUrl = post.shareUrl || post.url

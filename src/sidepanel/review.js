@@ -18,8 +18,8 @@ import {
   attachThreadToggleHandlers,
   formatModerationDetails,
   styleVoteSuggestion,
+  showImageLightbox,
 } from './format.js';
-import { createPostStore } from './storage.js';
 
 /**
  * navigator.clipboard.writeText rejects in some side-panel states (most commonly
@@ -59,11 +59,50 @@ async function copyWithFeedback(btn, text, label = 'Copy') {
   return ok;
 }
 
-const reviewStore = createPostStore('nd_review_');
-const savePostReview = reviewStore.save;
-const loadPostReview = reviewStore.load;
-const clearPostReview = reviewStore.clear;
-reviewStore.purgeExpired();
+// Wraps the first half of `text`'s words (capped at `maxCount`) in spans the
+// "brush sweep" load animation can target, leaving whitespace and the rest of
+// the text untouched.
+function wrapSweepWords(text, maxCount = 30) {
+  const totalWords = (text.match(/\S+/g) || []).length;
+  const count = Math.min(maxCount, Math.ceil(totalWords * 0.5));
+  let wordIndex = 0;
+  return text.split(/(\s+)/).map(token => {
+    if (token === '' || /^\s+$/.test(token) || wordIndex >= count) return token;
+    wordIndex++;
+    return `<span class="rv-sweep-word">${token}</span>`;
+  }).join('');
+}
+
+// Sweeps a highlight across the wrapped words in sequence — each one snaps to
+// full highlight then eases back over SWEEP_FADE_MS (CSS `rv-sweep-pulse`),
+// and the next word starts before the previous has finished fading, giving
+// the effect of a brush passing over the text rather than a one-at-a-time
+// blink. The card's border lights up for the whole pass and fades out once
+// the last word is done, so it reads as one continuous stroke.
+const SWEEP_STAGGER_MS = 220;
+const SWEEP_FADE_MS = 2400;
+
+function playSweepAnimation(container) {
+  const words = container.querySelectorAll('.rv-sweep-word');
+  if (!words.length) return;
+
+  words.forEach((el, i) => {
+    setTimeout(() => {
+      el.classList.add('rv-sweep-hit');
+      setTimeout(() => el.classList.remove('rv-sweep-hit'), SWEEP_FADE_MS);
+    }, i * SWEEP_STAGGER_MS);
+  });
+
+  const card = container.querySelector('.rv-card');
+  if (!card) return;
+  card.classList.add('rv-sweep-border');
+  const totalMs = (words.length - 1) * SWEEP_STAGGER_MS + SWEEP_FADE_MS;
+  setTimeout(() => {
+    card.classList.add('rv-sweep-border-fading');
+    card.classList.remove('rv-sweep-border');
+    setTimeout(() => card.classList.remove('rv-sweep-border-fading'), 1000);
+  }, totalMs);
+}
 
 /**
  * Extract moderation data from the raw captured /ModerationFeed GraphQL response.
@@ -73,10 +112,6 @@ reviewStore.purgeExpired();
  * capturedApiData via the getModerationFeedData action.
  */
 function extractModerationData(moderationFeedData, pageUrl = '') {
-  console.log('[Review] extractModerationData() called');
-  console.log('[Review] moderationFeedData exists:', !!moderationFeedData);
-  console.log('[Review] moderationFeedData value:', moderationFeedData);
-
   if (!moderationFeedData) {
     console.error('[Review] No moderation feed data available');
     return {
@@ -251,11 +286,6 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
      * @returns {Array} - Minimal conversation thread with only relevant context
      */
     function buildSmartConversationThread(flaggedComment, parentThread, allComments = []) {
-      console.log('[Review] Building smart thread for flagged comment:', flaggedComment.id);
-      console.log('[Review] Flagged comment tags:', JSON.stringify(flaggedComment.tags, null, 2));
-      console.log('[Review] Parent thread length:', parentThread.length);
-      console.log('[Review] All comments available for search:', allComments.length);
-
       // Always include original post (depth: -1)
       const originalPost = parentThread.find(msg => msg.depth === -1);
       if (!originalPost) {
@@ -270,12 +300,9 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
         tag.startIndex < 20  // Mentioned at/near start
       );
 
-      console.log('[Review] Found USER tags at start:', userTags.length);
-
       if (userTags.length > 0) {
         // Strategy 1: Find mentioned users' comments in ALL comments (including siblings)
         const mentionedUserIds = new Set(userTags.map(tag => tag.entityId));
-        console.log('[Review] Mentioned user IDs:', Array.from(mentionedUserIds));
 
         const flaggedEpoch = parseInt(flaggedComment.createdAtEpoch) || Infinity;
         const mentionedComments = [];
@@ -293,8 +320,6 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
         }
 
         if (mentionedComments.length > 0) {
-          console.log('[Review] Found mentioned users in all comments:', mentionedComments.length);
-
           // For each mentioned user, keep only their most recent comment
           const userToMostRecentComment = new Map();
 
@@ -326,33 +351,21 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
 
           // Build thread: [parent chain, new mentioned comments, flagged comment]
           const smartThread = [...parentThread, ...newMentionedComments, flaggedComment];
-
-          console.log('[Review] Smart thread structure (Strategy 1 - with siblings):',
-            smartThread.map(c => `${c.author} (depth ${c.depth})`).join(' → '));
-
           return smartThread;
-        } else {
-          console.log('[Review] No matching mentioned users found in all comments');
         }
       }
 
       // Strategy 2 (fallback): No USER tags or no matches - include direct parent only
-      console.log('[Review] Using fallback strategy: direct parent only');
-
       // Find direct parent (comment at depth N-1 where N is flagged comment's depth)
       const directParent = parentThread
         .filter(msg => msg.depth !== -1)  // Exclude original post
         .slice(-1)[0];  // Get last comment in chain (immediate parent)
 
       if (directParent) {
-        const smartThread = [originalPost, directParent, flaggedComment];
-        console.log('[Review] Built fallback thread:', smartThread.length, 'messages');
-        console.log('[Review] Thread structure:', smartThread.map(m => `${m.author} (depth: ${m.depth})`).join(' → '));
-        return smartThread;
+        return [originalPost, directParent, flaggedComment];
       }
 
       // Last resort: just original post + flagged comment
-      console.log('[Review] Last resort: original post + flagged comment only');
       return [originalPost, flaggedComment];
     }
 
@@ -533,17 +546,17 @@ export function initReview() {
     reviewing = true;
     gate.hidden = true;
     content.hidden = false;
-    await renderReview(result.data, mySeq);
+    await renderReview(result.data);
   }
 
-  async function renderReview(data, seq = moderateSeq) {
+  // Nothing about a review — analysis, Q&A, additional context, captured
+  // screenshots — is persisted. Moving to a different item (Next/Previous, or
+  // reopening one already reviewed) always starts blank; this was a deliberate
+  // simplification once screenshots were added to Additional Context, since
+  // persisting captured images per post would risk chrome.storage.local's quota
+  // and made "which post am I looking at" harder to reason about.
+  async function renderReview(data) {
     const { originalPost, flaggedContent, validation } = data;
-    const postId = flaggedContent?.id || flaggedContent?.legacyId || originalPost.id || originalPost.legacyId;
-    const savedReview = await loadPostReview(postId);
-    // Storage read is the one await between the seq check in moderateCurrentItem
-    // and the DOM writes below — bail if a newer item started rendering during it.
-    if (seq !== moderateSeq) return;
-
     statusEl.textContent = flaggedContent?.type === 'post' ? 'Reviewing post'
       : flaggedContent?.type === 'comment' ? 'Reviewing reply'
       : 'No flagged content';
@@ -569,7 +582,7 @@ export function initReview() {
           <h4 class="rv-section-title">Original Post</h4>
           <div class="rv-meta"><strong>${originalPost.author}</strong></div>
           <div class="rv-meta rv-meta-sub">${originalPost.createdAt} &bull; ${originalPost.neighborhood}</div>
-          <div class="rv-card">${originalPost.content.trim()}${renderImageAttachments(originalPost.imageUrls, !!originalPost.content)}</div>
+          <div class="rv-card">${wrapSweepWords(originalPost.content.trim())}${renderImageAttachments(originalPost.imageUrls, !!originalPost.content)}</div>
         </div>
 
         ${flaggedContent.conversationThread?.length > 0 ? formatConversationThread(flaggedContent.conversationThread) : ''}
@@ -593,14 +606,21 @@ export function initReview() {
       <div class="rv-analyze-block">
         <div class="rv-context-row">
           <label for="rv-additional-context" class="rv-context-label">
-            Additional Context ${(validation.hasMediaOnly || validation.hasVideos) ? '<span style="color:#dc2626;">*</span>' : '(optional)'}
+            Additional Context <span id="rv-context-required-mark" style="color:#dc2626; display:${(validation.hasMediaOnly || validation.hasVideos) ? 'inline' : 'none'};">*</span>${(validation.hasMediaOnly || validation.hasVideos) ? '' : ' (optional)'}
           </label>
-          <button id="rv-clear-context-btn" class="rv-clear-btn" style="display:${savedReview?.additionalContext ? 'inline-block' : 'none'};">Clear</button>
+          <div class="rv-context-actions">
+            <button id="rv-capture-btn" type="button" class="rv-clear-btn">📷 Capture</button>
+            <button id="rv-clear-context-btn" type="button" class="rv-clear-btn" style="display:none;">Clear</button>
+          </div>
         </div>
-        <textarea id="rv-additional-context" class="rv-context-textarea" placeholder="${validation.hasVideos ? 'REQUIRED: Describe the video content shown in this post...' : validation.hasMediaOnly ? 'REQUIRED: Describe the image/video/media content shown in this post...' : 'Describe images, videos, links, or other context not visible in the text'}"></textarea>
-        ${validation.hasVideos ? `<div class="rv-context-note rv-context-required">This field is REQUIRED — this post contains video that cannot be sent to the AI.</div>`
-          : validation.hasMediaOnly ? `<div class="rv-context-note rv-context-required">This field is REQUIRED because the post has no text content.</div>`
-          : `<div class="rv-context-note">This context will be included in the LLM analysis.</div>`}
+        <div class="rv-context-input-wrap">
+          <div id="rv-context-images" class="rv-context-images"></div>
+          <textarea id="rv-additional-context" class="rv-context-textarea" placeholder="${(validation.hasVideos || validation.hasMediaOnly) ? 'Describe it in text, capture a screenshot below, or both...' : 'Describe images, videos, links, or other context not visible in the text'}"></textarea>
+        </div>
+        <div id="rv-capture-error" class="rv-context-note rv-context-required" hidden></div>
+        ${(validation.hasVideos || validation.hasMediaOnly)
+          ? `<div id="rv-context-required-note" class="rv-context-note rv-context-required"></div>`
+          : `<div class="rv-context-note">This context (and any captured snapshots) will be included in the LLM analysis.</div>`}
         <div class="rv-analyze-row">
           <button id="rv-analyze-btn" class="sp-btn sp-btn-primary" style="max-width:200px;">Analyze with AI</button>
           <label class="rv-thread-toggle-label">
@@ -623,66 +643,134 @@ export function initReview() {
     `;
     attachThreadToggleHandlers(content);
     attachImageClickHandlers(content);
+    playSweepAnimation(content);
 
     const additionalContextTextarea = document.getElementById('rv-additional-context');
-    if (savedReview?.additionalContext && additionalContextTextarea) {
-      additionalContextTextarea.value = savedReview.additionalContext;
+    const requiresContext = validation.hasMediaOnly || validation.hasVideos;
+
+    // The requirement is text OR a captured screenshot, not text specifically —
+    // reflect whichever is actually still missing instead of always demanding
+    // text, and clear the "required" styling the moment either is provided.
+    function syncContextRequirement() {
+      if (!requiresContext) return;
+      const satisfied = !!additionalContextTextarea?.value.trim() || contextImages.length > 0;
+      const mark = document.getElementById('rv-context-required-mark');
+      const note = document.getElementById('rv-context-required-note');
+      if (mark) mark.style.display = satisfied ? 'none' : 'inline';
+      if (!note) return;
+      note.classList.toggle('rv-context-required', !satisfied);
+      const why = validation.hasVideos
+        ? "this post contains video that can't be sent to the AI as-is"
+        : 'this post has no text content';
+      note.textContent = satisfied
+        ? '✓ Requirement met — this context will be included in the LLM analysis.'
+        : `Required (${why}): a text description, a captured screenshot, or both.`;
     }
+
     additionalContextTextarea?.addEventListener('input', () => {
       const clearBtnEl = document.getElementById('rv-clear-context-btn');
       if (clearBtnEl) clearBtnEl.style.display = additionalContextTextarea.value.trim() ? 'inline-block' : 'none';
+      syncContextRequirement();
     });
-    document.getElementById('rv-clear-context-btn')?.addEventListener('click', async () => {
+
+    // Screenshots captured via "Capture" — in-memory only for this render pass,
+    // same as everything else in the review; see the note above renderReview.
+    let contextImages = [];
+    syncContextRequirement(); // populate the required-note text on first render
+
+    function renderContextImages() {
+      const wrap = document.getElementById('rv-context-images');
+      if (!wrap) return;
+      wrap.innerHTML = contextImages.map((src, i) => `
+        <div class="rv-context-thumb">
+          <img src="${src}" alt="Captured region ${i + 1}" data-idx="${i}">
+          <button type="button" class="rv-context-thumb-remove" data-idx="${i}" title="Remove">×</button>
+        </div>
+      `).join('');
+      wrap.querySelectorAll('.rv-context-thumb img').forEach(img => {
+        img.addEventListener('click', () => showImageLightbox(contextImages[Number(img.dataset.idx)]));
+      });
+      wrap.querySelectorAll('.rv-context-thumb-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          contextImages.splice(Number(btn.dataset.idx), 1);
+          renderContextImages();
+          syncClearButton();
+          syncContextRequirement();
+        });
+      });
+      // The thumbnail strip sits inside the textarea's own box (overlaid on top,
+      // not a separate element below it) — push typed text down below it so the
+      // two don't overlap.
+      if (additionalContextTextarea) {
+        additionalContextTextarea.style.paddingTop = contextImages.length > 0 ? '52px' : '';
+      }
+      syncContextRequirement();
+    }
+
+    function syncClearButton() {
+      const clearBtnEl = document.getElementById('rv-clear-context-btn');
+      if (!clearBtnEl) return;
+      const hasContent = !!additionalContextTextarea?.value.trim() || contextImages.length > 0;
+      clearBtnEl.style.display = hasContent ? 'inline-block' : 'none';
+    }
+
+    document.getElementById('rv-clear-context-btn')?.addEventListener('click', () => {
       if (additionalContextTextarea) additionalContextTextarea.value = '';
-      document.getElementById('rv-clear-context-btn').style.display = 'none';
-      // Clears THIS field only. It used to delete the whole saved record, which
-      // now would take the analysis and the entire Q&A conversation with it —
-      // a button labelled for one textarea shouldn't destroy unrelated work.
-      // Only drop the record entirely when nothing else is left in it.
-      const html = analysisContainer?.innerHTML || '';
-      if (!html && qaLog.length === 0) await clearPostReview(postId);
-      else await persistReview();
+      contextImages = [];
+      renderContextImages();
+      syncClearButton();
+    });
+
+    const captureBtn = document.getElementById('rv-capture-btn');
+    const captureLabel = captureBtn?.textContent || '📷 Capture';
+    const captureErrorEl = document.getElementById('rv-capture-error');
+    captureBtn?.addEventListener('click', async () => {
+      if (trackedTabId == null) return;
+      captureBtn.disabled = true;
+      captureBtn.textContent = 'Select a region on the page…';
+      if (captureErrorEl) { captureErrorEl.hidden = true; captureErrorEl.textContent = ''; }
+      let resp;
+      let sendError = null;
+      try {
+        resp = await browser.runtime.sendMessage({ action: 'startRegionCapture', tabId: trackedTabId });
+      } catch (err) {
+        sendError = err.message;
+      }
+      captureBtn.disabled = false;
+      if (resp?.success && resp.dataUrl) {
+        contextImages.push(resp.dataUrl);
+        renderContextImages();
+        syncClearButton();
+        // Visible confirmation beyond the thumbnail appearing below — without
+        // this a capture that succeeded looked identical to one that silently
+        // failed (button just reverts to its idle label either way).
+        captureBtn.textContent = `✓ Added (${contextImages.length})`;
+        setTimeout(() => { captureBtn.textContent = captureLabel; }, 1500);
+      } else if (resp?.cancelled) {
+        captureBtn.textContent = captureLabel;
+      } else {
+        // Show the actual failure instead of a generic message — this is
+        // returned by background.js's startRegionCapture handler (or thrown by
+        // sendMessage itself, e.g. a stale content script after a reload), and
+        // previously got thrown away here with nothing shown anywhere.
+        const msg = sendError || resp?.error || 'Unknown error';
+        captureBtn.textContent = '⚠ Capture failed';
+        setTimeout(() => { captureBtn.textContent = captureLabel; }, 2000);
+        if (captureErrorEl) { captureErrorEl.textContent = `Capture failed: ${msg}`; captureErrorEl.hidden = false; }
+      }
     });
 
     const analysisContainer = document.getElementById('rv-analysis-container');
     const analyzeBtn = document.getElementById('rv-analyze-btn');
-
-    // The saved record is replaced wholesale, so every write must carry the full
-    // state. The old blur handler saved only context+html, which silently dropped
-    // analysisText and left the vote footer unable to restore on the next visit.
-    let currentAnalysisText = savedReview?.analysisText || '';
-    let qaLog = Array.isArray(savedReview?.qaLog) ? savedReview.qaLog.slice() : [];
-
-    async function persistReview() {
-      const ctx = additionalContextTextarea?.value.trim() || '';
-      const html = analysisContainer?.innerHTML || '';
-      if (!ctx && !html && qaLog.length === 0) return;
-      await savePostReview(postId, {
-        additionalContext: ctx,
-        analysisHtml: html,
-        analysisText: currentAnalysisText,
-        qaLog,
-      });
-    }
-    additionalContextTextarea?.addEventListener('blur', persistReview);
-
-    if (savedReview?.analysisHtml) {
-      analysisContainer.innerHTML = savedReview.analysisHtml;
-      analysisContainer.querySelectorAll('[data-copy-text]').forEach(btn => {
-        btn.addEventListener('click', () => copyWithFeedback(btn, btn.dataset.copyText));
-      });
-      analyzeBtn.textContent = 'Re-analyze';
-      if (savedReview.analysisText) {
-        renderVoteFooter(savedReview.analysisText);
-      }
-    }
+    let qaLog = [];
 
     analyzeBtn.addEventListener('click', async () => {
       const additionalContext = additionalContextTextarea?.value.trim() || '';
-      if ((validation.hasMediaOnly || validation.hasVideos) && !additionalContext) {
+      if ((validation.hasMediaOnly || validation.hasVideos) && !additionalContext && contextImages.length === 0) {
         const msg = validation.hasVideos
-          ? 'Additional Context is required for posts with video. Please describe what the video shows.'
-          : 'Additional Context is required for media-only posts. Please describe the content of the image/video/media.';
+          ? 'Additional Context is required for posts with video. Describe what it shows, or click "Capture" to snapshot a frame.'
+          : 'Additional Context is required for media-only posts. Describe the content, or click "Capture" to snapshot it.';
         analysisContainer.innerHTML = `<div class="rv-error-box"><strong>Error:</strong> ${msg}</div>`;
         additionalContextTextarea.style.borderColor = '#f44336';
         additionalContextTextarea.focus();
@@ -690,7 +778,7 @@ export function initReview() {
       }
 
       analyzeBtn.disabled = true;
-      analysisContainer.innerHTML = `<div class="rv-loading">Analyzing…</div>`;
+      analysisContainer.innerHTML = `<div class="rv-loading"><span class="rv-spinner"></span><span>Analyzing<span class="rv-loading-dots"><span>.</span><span>.</span><span>.</span></span></span></div>`;
       scrollToBottom();
 
       const includeThread = document.getElementById('rv-include-thread-ctx')?.checked ?? true;
@@ -702,9 +790,12 @@ export function initReview() {
             flaggedContent: data.flaggedContent,
             conversationThread: includeThread ? (data.flaggedContent?.conversationThread || []) : [],
             additionalContext,
-            imageUrls: data.flaggedContent?.imageUrls?.length > 0
-              ? data.flaggedContent.imageUrls
-              : (data.originalPost?.imageUrls || []),
+            imageUrls: [
+              ...(data.flaggedContent?.imageUrls?.length > 0
+                ? data.flaggedContent.imageUrls
+                : (data.originalPost?.imageUrls || [])),
+              ...contextImages,
+            ],
           },
         });
 
@@ -737,9 +828,6 @@ export function initReview() {
         analysisContainer.querySelectorAll('[data-copy-text]').forEach(btn => {
           btn.addEventListener('click', () => copyWithFeedback(btn, btn.dataset.copyText));
         });
-
-        currentAnalysisText = resp.analysis.analysisText;
-        await persistReview();
 
         renderVoteFooter(resp.analysis.analysisText);
         scrollToBottom();
@@ -800,16 +888,6 @@ export function initReview() {
       bubble.appendChild(pill);
     }
 
-    // Replay a previously saved conversation for this post.
-    qaLog.forEach(entry => {
-      if (entry.role === 'user') {
-        addQaBubble(entry.content, true);
-      } else {
-        const bubble = addQaBubble('', false);
-        renderAssistantAnswer(bubble, entry.content);
-      }
-    });
-
     function applyRevisedVote(vote, comment) {
       const pillBtn = voteFooterEl.querySelector(`.rv-vote-pill[data-vote="${vote.toLowerCase()}"]`);
       if (!pillBtn) return;
@@ -844,12 +922,12 @@ export function initReview() {
           reviewData: data,
           analysisText,
           history,
+          imageUrls: contextImages,
         });
         const answer = resp?.answer || 'No response.';
         renderAssistantAnswer(typingBubble, answer);
         qaLog.push({ role: 'user', content: question });
         qaLog.push({ role: 'assistant', content: answer });
-        await persistReview();
       } catch (err) {
         typingBubble.textContent = 'Error: ' + err.message;
         typingBubble.classList.add('pp-bubble-error');
@@ -1080,9 +1158,6 @@ export function initReview() {
     moderateCurrentItem(true);
   }
 
-  // Auto-load means the "Moderate reply/post" button is normally skipped, so ↻ is
-  // how a moderator forces a reload of the item already on screen. Re-rendering
-  // restores that post's saved analysis and Q&A, so nothing is lost.
   // No refresh control here on purpose. Next/Previous each issue a real
   // /ModerationFeed request (nothing is served from the browser's own cache), so
   // the captured payload is always current for the item on screen — there is

@@ -1,11 +1,14 @@
 /**
  * Content script (isolated world) — the extension's only presence in the page.
  *
- * It builds no UI. Everything the moderator sees lives in the side panel; this
- * file exists for the three jobs that genuinely require the page itself:
+ * Everything the moderator sees persists in the side panel; this file exists
+ * for the jobs that genuinely require the page itself:
  *   1. Bridging captured GraphQL bodies from the MAIN-world net-hook to the SW
  *   2. Expanding all replies on an open post (clicking Nextdoor's own controls)
  *   3. Reading the currently-expanded post id, and noticing when it closes
+ *   4. A transient drag-to-select overlay for the side panel's screenshot
+ *      capture (startRegionSelection) — removed the moment a region is picked
+ *      or the capture is cancelled, never a persistent page fixture
  */
 import browser from 'webextension-polyfill';
 
@@ -67,6 +70,102 @@ function getExpandedPostIdFromDom() {
     window.addEventListener('message', handler);
     window.postMessage({ source: 'ndm-get-expanded-id', reqId }, '*');
     setTimeout(() => finish({ postId: null }), 1000);
+  });
+}
+
+// Lets the moderator drag a rectangle over the live page (e.g. a video frame or
+// GIF that can't be sent to the LLM as text) and hands the selected region back
+// to background.js, which screenshots the tab and crops to it — see
+// startRegionCapture in background.js. Resolves { cancelled: true } on Escape or
+// a too-small drag, otherwise { cancelled: false, rect: {x, y, width, height, dpr} }
+// in CSS-pixel viewport coordinates (dpr included so the crop can be done against
+// the full-resolution capture captureVisibleTab returns).
+function startRegionSelection() {
+  return new Promise(resolve => {
+    let settled = false;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483647; cursor:crosshair; background:rgba(0,0,0,0.12);';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed; display:none; pointer-events:none; z-index:2147483647; border:2px solid #2563eb; background:rgba(37,99,235,0.15); box-sizing:border-box;';
+    document.body.appendChild(overlay);
+    document.body.appendChild(box);
+
+    function cleanup() {
+      window.removeEventListener('keydown', onKeydown, true);
+      overlay.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      if (moveRaf) cancelAnimationFrame(moveRaf);
+      overlay.remove();
+      box.remove();
+    }
+
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
+
+    function onKeydown(e) {
+      if (e.key === 'Escape') finish({ cancelled: true });
+    }
+
+    function onMouseDown(e) {
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      Object.assign(box.style, { left: startX + 'px', top: startY + 'px', width: '0px', height: '0px', display: 'block' });
+    }
+
+    // Native mousemove can fire dozens of times/sec during a drag; writing the
+    // box's style on every single one is enough main-thread work to jank other
+    // unrelated page activity (observed: it could delay net-hook postMessage
+    // round-trips past their own 1s timeout, e.g. content-api.js's
+    // getExpandedPostIdFromDom, which postpanel.js polls every 1s and treats a
+    // single timeout as "the post closed" — wiping live panel state mid-drag).
+    // rAF-batching the write to once per frame removes that risk.
+    let pendingMove = null;
+    let moveRaf = null;
+    function onMouseMove(e) {
+      if (!dragging) return;
+      pendingMove = e;
+      if (moveRaf) return;
+      moveRaf = requestAnimationFrame(() => {
+        moveRaf = null;
+        const ev = pendingMove;
+        const x = Math.min(ev.clientX, startX);
+        const y = Math.min(ev.clientY, startY);
+        Object.assign(box.style, { left: x + 'px', top: y + 'px', width: Math.abs(ev.clientX - startX) + 'px', height: Math.abs(ev.clientY - startY) + 'px' });
+      });
+    }
+
+    function onMouseUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      const x = Math.min(e.clientX, startX);
+      const y = Math.min(e.clientY, startY);
+      const width = Math.abs(e.clientX - startX);
+      const height = Math.abs(e.clientY - startY);
+      if (width < 8 || height < 8) { finish({ cancelled: true }); return; }
+      // Hide the overlay/box before the tab is captured so they don't show up in
+      // the screenshot — background.js captures only after this promise resolves,
+      // so give the hide two frames to actually paint first.
+      overlay.style.display = 'none';
+      box.style.display = 'none';
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        finish({ cancelled: false, rect: { x, y, width, height, dpr: window.devicePixelRatio || 1 } });
+      }));
+    }
+
+    window.addEventListener('keydown', onKeydown, true);
+    overlay.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
   });
 }
 
@@ -208,6 +307,10 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message.action === 'getExpandedPostId') {
     getExpandedPostIdFromDom().then(sendResponse);
+    return true;
+  }
+  if (message.action === 'startRegionCapture') {
+    startRegionSelection().then(sendResponse);
     return true;
   }
 });

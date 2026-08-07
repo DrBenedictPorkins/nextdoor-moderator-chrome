@@ -14,6 +14,7 @@
 import browser from 'webextension-polyfill';
 import { buildMarkdownFromPostData, renderMarkdownToHtml } from './markdown.js';
 import { createPostStore } from './storage.js';
+import { showImageLightbox } from './format.js';
 
 let trackedTabId = null;
 let currentMarkdown = '';
@@ -22,6 +23,14 @@ let currentVideoCount = 0;
 let chatHistory = [];
 let totalInputTokens = 0;
 let totalOutputTokens = 0;
+// Screenshots staged via "📷" for the *next* chat message (video/GIF frames,
+// mainly) — consumed by that one send: sendChatMessage snapshots and clears
+// this, moving the images into that message's bubble permanently rather than
+// resending them with every later question. In-memory only, never persisted
+// with the rest of the chat — same reasoning as the Review tab's Additional
+// Context: base64 images would risk chrome.storage.local's quota. Also reset
+// outright whenever the panel moves to a different post.
+let capturedChatImages = [];
 
 // Conversations persist per post, so reopening one brings back the scan result
 // and any follow-up questions instead of charging for them again.
@@ -39,6 +48,8 @@ export function initPostPanel() {
   const chatSend = document.getElementById('pp-chat-send');
   const scanBtn = document.getElementById('pp-scan-btn');
   const previewBtn = document.getElementById('pp-preview-btn');
+  const captureBtn = document.getElementById('pp-capture-btn');
+  const chatImagesEl = document.getElementById('pp-chat-images');
 
   // Which post (by id) the panel is currently associated with, and whether the
   // moderator has clicked "Preview here" for it yet. A new/different post always
@@ -49,6 +60,25 @@ export function initPostPanel() {
   // conversation so a restore can tell whether the thread has moved on since.
   let currentCommentCount = 0;
 
+  function renderChatImages() {
+    chatImagesEl.innerHTML = capturedChatImages.map((src, i) => `
+      <div class="rv-context-thumb">
+        <img src="${src}" alt="Captured region ${i + 1}" data-idx="${i}">
+        <button type="button" class="rv-context-thumb-remove" data-idx="${i}" title="Remove">×</button>
+      </div>
+    `).join('');
+    chatImagesEl.querySelectorAll('.rv-context-thumb img').forEach(img => {
+      img.addEventListener('click', () => showImageLightbox(capturedChatImages[Number(img.dataset.idx)]));
+    });
+    chatImagesEl.querySelectorAll('.rv-context-thumb-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        capturedChatImages.splice(Number(btn.dataset.idx), 1);
+        renderChatImages();
+      });
+    });
+  }
+
   function showEmpty() {
     currentPostId = null;
     previewShown = false;
@@ -58,6 +88,8 @@ export function initPostPanel() {
     countEl.textContent = 'No post loaded';
     chatHistory = [];
     chatMessages.innerHTML = '';
+    capturedChatImages = [];
+    renderChatImages();
   }
 
   function showReadyPrompt() {
@@ -182,10 +214,31 @@ export function initPostPanel() {
     chatHistory = [];
     totalInputTokens = 0;
     totalOutputTokens = 0;
+    capturedChatImages = [];
+    renderChatImages();
     renderFullPreview(post);
     if (saved) restoreChat(saved);
   }
   previewBtn.addEventListener('click', () => doPreview());
+
+  captureBtn.addEventListener('click', async () => {
+    if (trackedTabId == null) return;
+    captureBtn.disabled = true;
+    const originalLabel = captureBtn.textContent;
+    captureBtn.textContent = '…';
+    let resp;
+    try {
+      resp = await browser.runtime.sendMessage({ action: 'startRegionCapture', tabId: trackedTabId });
+    } catch { /* resp stays undefined; handled below */ }
+    captureBtn.disabled = false;
+    captureBtn.textContent = originalLabel;
+    if (resp?.success && resp.dataUrl) {
+      capturedChatImages.push(resp.dataUrl);
+      renderChatImages();
+    } else if (!resp?.cancelled) {
+      addNoticeBubble(`Capture failed: ${resp?.error || 'Unknown error'}`);
+    }
+  });
 
   async function persistChat() {
     if (!currentPostId || chatHistory.length === 0) return;
@@ -245,10 +298,19 @@ export function initPostPanel() {
   // already cached for that id — postDataCache isn't cleared on close, only the
   // lastExpandedPostId *pointer* is, so the data is still there.
   let currentDomPostId = null;
+  // getExpandedPostIdFromDom (content-api.js) has its own ~1s internal timeout
+  // for a postMessage round-trip to the MAIN-world net-hook — under enough
+  // main-thread jank (e.g. a drag gesture elsewhere on the page) that round-trip
+  // can miss it and come back null even though the post is still open. Acting on
+  // a single null read wiped live panel state (including screenshots staged for
+  // the chat) on nothing more than a timing blip. Require two in a row.
+  let nullPolls = 0;
   async function pollDomPostId() {
     if (trackedTabId == null) return;
     const resp = await browser.runtime.sendMessage({ action: 'getExpandedPostId', tabId: trackedTabId }).catch(() => null);
     const postId = resp?.postId != null ? String(resp.postId) : null;
+    if (postId) nullPolls = 0;
+    else if (++nullPolls < 2) return;
     if (postId === currentDomPostId) return;
     currentDomPostId = postId;
     if (!postId) { showEmpty(); return; }
@@ -337,13 +399,60 @@ export function initPostPanel() {
 
   refreshBtn.addEventListener('click', () => refreshNow());
 
-  function addBubble(text, isUser) {
+  // `images`, when given, are whatever was staged in the attachment tray at the
+  // moment this message was sent — they move into the bubble permanently (for
+  // the rest of this live session; see the in-memory note on capturedChatImages)
+  // rather than staying in the tray to be resent with every later question.
+  function addBubble(text, isUser, images = []) {
     const div = document.createElement('div');
     div.className = isUser ? 'pp-bubble pp-bubble-user' : 'pp-bubble pp-bubble-assistant';
-    if (isUser) div.textContent = text; else div.innerHTML = renderMarkdownToHtml(text);
+    if (isUser) div.textContent = text; else { div.innerHTML = renderMarkdownToHtml(text); addCopySnippetButtons(div); }
+    if (images.length > 0) {
+      const row = document.createElement('div');
+      row.className = 'pp-bubble-images';
+      images.forEach((src, i) => {
+        const thumb = document.createElement('img');
+        thumb.src = src;
+        thumb.alt = `Attached image ${i + 1}`;
+        thumb.className = 'pp-bubble-thumb';
+        thumb.addEventListener('click', () => showImageLightbox(src));
+        row.appendChild(thumb);
+      });
+      div.appendChild(row);
+    }
     chatMessages.appendChild(div);
     div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     return div;
+  }
+
+  // Scan for violations reports each item as a fixed "N. **Content:** "quote""
+  // field (see SCAN_PROMPT below) — that quote is already the moderator's own
+  // "copy the first words and Ctrl+F it on the page" workflow, verbatim. This
+  // finds those lines after markdown rendering and adds a one-click copy of the
+  // first ~12 words, so there's no manual scrolling/selecting to do it. Runs on
+  // every assistant bubble (live or restored from history) — harmless no-op on
+  // ordinary Q&A answers, since they never take this exact "N. Content: "..."" shape.
+  function addCopySnippetButtons(container) {
+    const contentLine = /Content:\s*"(.+?)"\s*$/;
+    Array.from(container.children).forEach(div => {
+      const match = (div.textContent || '').match(contentLine);
+      if (!match) return;
+      const snippet = match[1].trim().split(/\s+/).slice(0, 12).join(' ');
+      if (!snippet) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pp-copy-snippet-btn';
+      btn.textContent = '📋 Copy to find on page';
+      btn.title = "Copies the start of this text — paste into the page's Find (Ctrl/Cmd+F) to jump to it";
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(snippet).then(() => {
+          const original = btn.textContent;
+          btn.textContent = '✓ Copied';
+          setTimeout(() => { btn.textContent = original; }, 1200);
+        }).catch(() => {});
+      });
+      div.appendChild(btn);
+    });
   }
 
   // Panel-generated, not part of the conversation — deliberately a different colour
@@ -423,7 +532,14 @@ export function initPostPanel() {
   async function sendChatMessage(question, displayText) {
     if (!question || chatSend.disabled) return;
 
-    addBubble(displayText ?? question, true);
+    // Consumed by this send only — not resent with later questions. currentImageUrls
+    // (the post's own actual images) is unaffected and keeps going out with every
+    // question, same as always; only moderator-captured screenshots work this way.
+    const attachedImages = capturedChatImages;
+    capturedChatImages = [];
+    renderChatImages();
+
+    addBubble(displayText ?? question, true, attachedImages);
     chatHistory.push({ role: 'user', content: question });
     chatSend.disabled = true;
     scanBtn.disabled = true;
@@ -436,11 +552,12 @@ export function initPostPanel() {
         action: 'chatAboutPost',
         question,
         markdown: currentMarkdown,
-        imageUrls: currentImageUrls,
+        imageUrls: [...currentImageUrls, ...attachedImages],
         history: chatHistory.slice(0, -1),
       });
       const answer = resp?.answer || 'No response.';
       typingBubble.innerHTML = renderMarkdownToHtml(answer);
+      addCopySnippetButtons(typingBubble);
       chatHistory.push({ role: 'assistant', content: answer });
 
       const inTok = resp?.inputTokens;

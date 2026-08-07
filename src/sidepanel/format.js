@@ -204,6 +204,18 @@ export function attachImageClickHandlers(container) {
   });
 }
 
+// Full-size preview for a captured screenshot (data: URI, not a real URL — unlike
+// renderImageAttachments/attachImageClickHandlers above, window.open on a giant
+// base64 URI is a worse experience than just showing it in-panel). Shared by the
+// Review tab's Additional Context and Post Panel's chat attachments.
+export function showImageLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'rv-lightbox';
+  overlay.innerHTML = `<img src="${src}" alt="Captured region">`;
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
 export function formatConversationThread(conversationThread) {
   if (!conversationThread || conversationThread.length === 0) return '';
 

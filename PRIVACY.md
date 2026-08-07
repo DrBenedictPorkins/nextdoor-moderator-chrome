@@ -1,6 +1,6 @@
 # Privacy Policy — Nextdoor Moderator Assistant
 
-*Last updated: June 2026*
+*Last updated: August 2026*
 
 ## Summary
 
@@ -15,6 +15,7 @@ When you click **Analyze with AI**, the extension sends the following to your co
 - The text of the flagged post and its conversation thread
 - Report tags and vote counts (no reviewer identity)
 - Any additional context you type into the context field
+- Any screenshot you capture using the region-capture ("📷") tool in the Review tab's Additional Context or the Post Panel chat — sent as image data to help the model assess content (e.g. a video or GIF frame) that can't be represented as text
 
 This data is sent directly from your browser to the LLM API endpoint. It is not routed through any developer-owned server.
 
@@ -22,9 +23,10 @@ This data is sent directly from your browser to the LLM API endpoint. It is not 
 
 The following is stored in Chrome's `chrome.storage.local` (on your device only):
 
-- Your LLM API key(s)
-- Your selected provider and model
-- Cached analysis results for posts you have reviewed (stored by post ID, cleared when the extension is removed)
+- Your LLM API key(s) and selected model, stored separately per provider
+- Your cached Post Panel chat conversation for a given post (stored by post ID, expires automatically after 7 days)
+
+Screenshots you capture with the region-capture tool are held in memory only for the current session — never written to `chrome.storage.local` — and are cleared when you switch posts or close the panel. The Review tab does not persist anything between posts; switching posts clears its analysis and Q&A.
 
 None of this data is accessible to the developer or any third party.
 
@@ -54,4 +56,4 @@ If this policy changes materially, the updated version will be committed to this
 
 ## Contact
 
-Open an issue at [github.com/DrBenedictPorkins/nextdoor-moderator-extension](https://github.com/DrBenedictPorkins/nextdoor-moderator-extension/issues).
+Open an issue at [github.com/DrBenedictPorkins/nextdoor-moderator-chrome](https://github.com/DrBenedictPorkins/nextdoor-moderator-chrome/issues).

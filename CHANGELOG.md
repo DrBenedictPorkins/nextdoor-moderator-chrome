@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
-## [1.2.0]
+## [1.2.0] - 2026-08-07
 
 ### Changed
 - **All UI moved into a Chrome side panel.** The floating in-page widget, the AI Review overlay, the vote footer, and the fixed-position Post Panel drawer are gone — everything now lives in a single side panel (toolbar icon) with three tabs: Review, Post Panel, and Settings. This removes the visual overlap the old Post Panel drawer had with Nextdoor's own post modal. The side panel tracks whichever Nextdoor tab is active and switches between the Review and Post Panel tabs automatically as you navigate between the moderation queue and individual posts.

@@ -24,6 +24,26 @@ The extension lives entirely in a Chrome **side panel** (opened via the toolbar 
 
 ---
 
+## Screenshots
+
+**Settings** — Configure your LLM provider, API key, and model. Validated before saving; keys are stored per provider.
+
+![Settings](assets/screenshots/01-settings.jpeg)
+
+**Review tab — Original Post** — Reports summary with vote counts, individual reviewer votes, and optional context (text or a captured screenshot) before AI analysis.
+
+![Review tab — Original Post](assets/screenshots/02-review-original-post.jpeg)
+
+**AI Recommendation** — Color-coded verdict card with guideline scan, reasoning, and a ready-to-use comment suggestion. Model and provider shown top-right.
+
+![AI Recommendation](assets/screenshots/03-ai-recommendation.jpeg)
+
+**Post Panel** — Full thread view with all comments and replies, exportable as markdown, plus in-context AI chat.
+
+![Post Panel](assets/screenshots/04-post-panel.jpeg)
+
+---
+
 ## Installation
 
 ### From the Chrome Web Store

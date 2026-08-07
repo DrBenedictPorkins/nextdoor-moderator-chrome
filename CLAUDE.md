@@ -119,9 +119,9 @@ Both the analysis and the scan now gate every finding on an **evidence test**: q
 
 `SCAN_PROMPT` (`postpanel.js`) reports **only** violations and borderline calls; clean items are assessed but not printed, with an opening line stating coverage.
 
-### Remaining before submission
+### Nothing outstanding — ready for `cut-release.sh`
 
-1. **`assets/screenshots/`** — all five predate the side panel; `01-popup-configuration.jpeg` shows a popup that no longer exists. Reviewers compare screenshots to behavior. Not yet redone.
+`assets/screenshots/` (4 files, README-embedded, full-height side-panel captures) retaken against the current side-panel UI: `01-settings.jpeg`, `02-review-original-post.jpeg`, `03-ai-recommendation.jpeg`, `04-post-panel.jpeg`. `assets/store-screenshots/` holds the same 4 shots reflowed to the Chrome Web Store's required 1280x800: each panel screenshot scaled to fit and centered on a `#A41A18` canvas (sampled from the extension's own title-bar red) via ImageMagick — upload these 4 for the listing, not the README set.
 
 `PRIVACY.md`'s public URL for the listing: `docs/store-submission.md` now points at `https://github.com/DrBenedictPorkins/nextdoor-moderator-chrome/blob/main/PRIVACY.md` (already on `main`).
 

@@ -7,15 +7,17 @@
 # What this does:
 #   1. Abort if not on a hotfix/* branch, tree is dirty, or the branch's
 #      version-bump commit (from cut-hotfix-start.sh) can't be found
-#   2. Tag current HEAD with the hotfix version (vX.Y.Z)
-#   3. Switch to main, merge with --no-ff, build, commit
-#   4. Revert JUST the version-bump commit on top of the merge — restores
+#   2. Find CHANGELOG.md's undated "## [X.Y.Z]" entry for the hotfix version,
+#      stamp it with today's date, and commit that alone
+#   3. Tag that commit with the hotfix version (vX.Y.Z)
+#   4. Switch to main, merge with --no-ff, build, commit
+#   5. Revert JUST the version-bump commit on top of the merge — restores
 #      main's own (higher) version without touching any other change the
 #      hotfix made to package.json/package-lock.json/manifest.json, or any
 #      other file. (Blindly overwriting those files wholesale would silently
 #      discard anything else the hotfix legitimately changed in them.)
-#   5. Build again + commit the revert
-#   6. Delete the hotfix branch
+#   6. Build again + commit the revert
+#   7. Delete the hotfix branch
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,10 +50,31 @@ if [ -z "$BUMP_COMMIT" ]; then
   exit 1
 fi
 
-# ── 2. Tag the hotfix ────────────────────────────────────────────────────────
+# ── 2. Date the CHANGELOG entry and commit it BEFORE tagging ────────────────
+# The tag must point at a commit whose CHANGELOG already reflects the release
+# date — never tag first and date the file after.
 VERSION=$(node -p "require('./package.json').version")
 TAG="v${VERSION}"
 
+ESCAPED_VERSION=$(printf '%s' "$VERSION" | sed 's/[.[\*^$/]/\\&/g')
+UNDATED_HEADER="## [${VERSION}]"
+
+if grep -qxF "$UNDATED_HEADER" CHANGELOG.md; then
+  RELEASE_DATE=$(date +%F)
+  sed -i.bak "s/^## \[${ESCAPED_VERSION}\]\$/## [${VERSION}] - ${RELEASE_DATE}/" CHANGELOG.md
+  rm -f CHANGELOG.md.bak
+  git add CHANGELOG.md
+  git commit -m "CHANGELOG: date the v${VERSION} hotfix"
+  echo "  Dated CHANGELOG entry: v${VERSION} - ${RELEASE_DATE}"
+elif grep -qE "^## \[${ESCAPED_VERSION}\] - " CHANGELOG.md; then
+  echo "Error: CHANGELOG.md already has a dated entry for ${VERSION} — was this hotfix already released?"
+  exit 1
+else
+  echo "Error: No CHANGELOG.md entry \"${UNDATED_HEADER}\" found. Add the hotfix notes under that heading before finishing."
+  exit 1
+fi
+
+# ── 3. Tag the hotfix ────────────────────────────────────────────────────────
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "Error: Tag $TAG already exists."
   exit 1
@@ -60,7 +83,7 @@ fi
 git tag "$TAG"
 echo "Tagged: $TAG"
 
-# ── 3. Switch to main and merge ──────────────────────────────────────────────
+# ── 4. Switch to main and merge ──────────────────────────────────────────────
 echo "Switching to main..."
 git checkout main
 
@@ -88,7 +111,7 @@ npm run build --silent
 
 git commit -m "Merge $BRANCH into main (hotfix $TAG)"
 
-# ── 4. Revert just the version-bump commit ────────────────────────────────────
+# ── 5. Revert just the version-bump commit ────────────────────────────────────
 echo "Reverting version bump ($BUMP_COMMIT) — restoring main's own version..."
 git revert --no-commit "$BUMP_COMMIT" || true
 
@@ -107,13 +130,13 @@ if [ -n "$REVERT_CONFLICTS" ]; then
   exit 1
 fi
 
-# ── 5. Build again + commit the revert ────────────────────────────────────────
+# ── 6. Build again + commit the revert ────────────────────────────────────────
 echo "Building..."
 npm run build --silent
 
 git commit -m "Revert hotfix version bump — main stays on its own version"
 
-# ── 6. Delete hotfix branch ────────────────────────────────────────────────────
+# ── 7. Delete hotfix branch ────────────────────────────────────────────────────
 git branch -d "$BRANCH"
 
 MAIN_VERSION=$(node -p "require('./package.json').version")

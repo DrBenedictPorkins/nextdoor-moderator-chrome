@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0]
+
+### Fixed
+- Reported content no longer falls through to "No flagged content found". Nextdoor turned `FeedItem` into a union (`FeedItemPost`, `FeedItemComment`, `FeedItemTopLineComment`, `FeedItemClassified`, `VideoFeedItem`) and hoisted `moderationInfo` onto the feed item itself via a new `ModeratableFeedItem` interface. The Review tab read only `post.moderationInfo` and scanned `post.comments.pagedComments` for the reported comment, so comment reports registered as nothing flagged. It now reads the feed-item summary as well, and takes the reported comment straight off `feedItem.comment` when it isn't in the page of comments the response carries — which it often isn't on a long thread.
+- Post Panel's moderation summary (`getPostById`) reads the feed-item `moderationInfo` under the same rules.
+- "No post data found in feed item" now names the feed item's `__typename`, so a future union member is identifiable from the message alone.
+
+### Added
+- `[Review] SHAPE CHANGE?` console warning when a feed item parses but nothing is flagged anywhere — the signature of a Nextdoor schema change, which is otherwise silent. Logs the `__typename`, both `moderationInfo` key sets, and the comment count.
+- Report tags and the reporters' stated reasons are now passed to the Post Panel chat, not just the Review tab's analysis and Q&A.
+
+### Changed
+- Chat prompts answer the literal question asked, hold a correct answer under pushback, don't accept blame for something they didn't do, never end a turn with a question back to the moderator, and don't editorialize on the moderator's characterization of the people in a thread.
+- Gender inference from a displayed name is answered directly instead of refused or hedged.
+
 ## [1.2.0] - 2026-08-07
 
 ### Changed

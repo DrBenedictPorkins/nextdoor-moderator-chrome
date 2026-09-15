@@ -134,12 +134,22 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
     const feedItem = feedItems[0];
     const post = feedItem.post;
 
+    // Nextdoor's FeedItem is a union: FeedItemPost, FeedItemComment,
+    // FeedItemTopLineComment, FeedItemClassified, VideoFeedItem. All but
+    // FeedItemTopLineComment carry the parent `post`; that one carries only the
+    // comment, so there is no thread to render around it.
     if (!post) {
       return {
         success: false,
-        error: 'No post data found in feed item',
+        error: `No post data found in feed item (${feedItem.__typename || 'unknown type'})`,
       };
     }
+
+    // On a comment report the reported comment now hangs off the feed item
+    // itself (FeedItemComment.comment) instead of only being discoverable by its
+    // own moderationSummaryV3 inside post.comments.pagedComments.
+    const reportedComment = feedItem.comment || null;
+    const reportedCommentId = reportedComment?.id || null;
 
     // Extract original post data
     // Use styledBody.text if available (contains full text including title), otherwise fall back to body
@@ -192,10 +202,23 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
 
     console.log(`[NDM] Self-promo fields for post ${originalPost.id}: postType=${JSON.stringify(originalPost.postType)}, classified=${JSON.stringify(originalPost.classified)}, classifiedInfo=${JSON.stringify(originalPost.classifiedInfo)}, localServiceData=${JSON.stringify(originalPost.localServiceData)}, authorType=${JSON.stringify(originalPost.authorType)}`);
 
-    // Extract moderation info with details
+    // Extract moderation info with details.
+    // moderationSummaryV3 used to live only on post.moderationInfo. Every
+    // concrete FeedItem type now implements ModeratableFeedItem, which carries
+    // `moderationInfo: ContentModerationInfo!` on the feed item as well, so read
+    // both. The field was not renamed — moderationSummaryV3 is still the current
+    // one on ContentModerationInfo (there is no V4; V2 and the legacy
+    // moderationSummary are the only others).
+    //
+    // A feed-item summary on a comment report describes the COMMENT, not the
+    // post, so it must not be promoted into a post flag.
+    const feedItemSummary = feedItem.moderationInfo?.moderationSummaryV3 || null;
+    const postSummary = post.moderationInfo?.moderationSummaryV3
+      || (reportedComment ? null : feedItemSummary)
+      || null;
     const moderationInfo = {
-      hasModerationSummary: !!feedItem.moderationInfo?.moderationSummaryV3,
-      moderationSummary: feedItem.moderationInfo?.moderationSummaryV3 || null,
+      hasModerationSummary: !!postSummary,
+      moderationSummary: postSummary,
     };
 
     // Parse moderation summary for display-friendly format
@@ -248,16 +271,19 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
 
         console.log(`[NDM] Self-promo fields for comment ${commentData.id}: detectedBusiness=${JSON.stringify(commentData.detectedBusiness)}, authorType=${JSON.stringify(commentData.authorType)}`);
 
-        // Check if this comment is flagged
-        if (comment.moderationInfo?.moderationSummaryV3) {
-          const commentModerationDetails = parseModerationSummary(comment.moderationInfo.moderationSummaryV3);
+        // Flagged either by its own summary, or by being the comment this feed
+        // item is a report of (the summary then sits on the feed item).
+        const commentSummary = comment.moderationInfo?.moderationSummaryV3
+          || (comment.id === reportedCommentId ? feedItemSummary : null);
+        if (commentSummary) {
+          const commentModerationDetails = parseModerationSummary(commentSummary);
 
           // Build smart minimal conversation thread based on tags
           const smartThread = buildSmartConversationThread(commentData, parentThread, allComments);
 
           flaggedComments.push({
             ...commentData,
-            moderationSummary: comment.moderationInfo.moderationSummaryV3,
+            moderationSummary: commentSummary,
             moderationDetails: commentModerationDetails,
             // Smart conversation thread: only relevant context
             conversationThread: smartThread,
@@ -391,6 +417,36 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
     const topLevelComments = post.comments?.pagedComments?.edges || [];
     findFlaggedCommentsRecursive(topLevelComments, [originalPostContext], 0, allComments);
 
+    // The reported comment is not guaranteed to be inside the page of comments
+    // the feed response carries — a reply buried in a 90-comment thread routinely
+    // is not. If the walk above missed it, take it straight off the feed item so
+    // the report still renders, with whatever context we do have.
+    if (reportedCommentId && !flaggedComments.some(c => c.id === reportedCommentId)) {
+      const c = reportedComment;
+      const summary = c.moderationInfo?.moderationSummaryV3 || feedItemSummary;
+      const commentData = {
+        id: c.id,
+        legacyId: c.legacyCommentId,
+        content: c.styledBody?.text || c.body || '',
+        author: c.author?.displayName || 'Unknown',
+        authorUrl: c.author?.url || '',
+        authorUserId: c.author?.user?.id || null,
+        createdAt: c.createdAt?.asDateTime?.relativeTime || '',
+        createdAtEpoch: c.createdAt?.epochMillis || null,
+        depth: 0,
+        tags: c.tags || [],
+        imageUrls: (c.mediaAttachments || []).filter(m => m.type === 'PHOTO').map(m => m.url).filter(Boolean),
+        detectedBusiness: c.detectedBusiness ?? null,
+        authorType: c.author?.type ?? c.author?.authorType ?? null,
+      };
+      flaggedComments.push({
+        ...commentData,
+        moderationSummary: summary,
+        moderationDetails: summary ? parseModerationSummary(summary) : null,
+        conversationThread: [originalPostContext, commentData],
+      });
+    }
+
     // Determine what is flagged
     const validation = {
       hasOriginalPost: !!originalPost.content || originalPost.hasMedia, // Accept posts with media even if no text
@@ -402,6 +458,27 @@ function extractModerationData(moderationFeedData, pageUrl = '') {
       flaggedCount: (moderationInfo.hasModerationSummary ? 1 : 0) + flaggedComments.length,
       multipleFlags: (moderationInfo.hasModerationSummary ? 1 : 0) + flaggedComments.length > 1,
     };
+
+    // Everything in the moderation feed is there because it was reported, so a
+    // feed item that parses but carries no flag anywhere is not a normal state —
+    // it means Nextdoor moved the field again. Log the shape so the next break is
+    // diagnosable without re-probing the schema. (Nextdoor has done this once
+    // already: moderationInfo was hoisted from post onto the feed item when
+    // FeedItem became a union.)
+    if (!validation.postIsFlagged && !validation.hasFlaggedComments) {
+      console.warn(
+        '[Review] SHAPE CHANGE? Feed item parsed but nothing is flagged.',
+        {
+          feedItemType: feedItem.__typename || null,
+          feedItemKeys: Object.keys(feedItem || {}),
+          feedItemModerationInfoKeys: Object.keys(feedItem.moderationInfo || {}),
+          postModerationInfoKeys: Object.keys(post.moderationInfo || {}),
+          hasFeedItemComment: !!feedItem.comment,
+          commentsReturned: (post.comments?.pagedComments?.edges || []).length,
+          postId: post.id,
+        }
+      );
+    }
 
     // Determine flagged content (prioritize post, then first comment)
     let flaggedContent = null;

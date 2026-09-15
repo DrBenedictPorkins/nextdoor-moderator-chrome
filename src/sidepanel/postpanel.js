@@ -14,12 +14,16 @@
 import browser from 'webextension-polyfill';
 import { buildMarkdownFromPostData, renderMarkdownToHtml } from './markdown.js';
 import { createPostStore } from './storage.js';
-import { showImageLightbox } from './format.js';
+import { showImageLightbox, parseModerationSummary } from './format.js';
 
 let trackedTabId = null;
 let currentMarkdown = '';
 let currentImageUrls = [];
 let currentVideoCount = 0;
+// Only non-null when this post was ALSO seen in a captured /ModerationFeed
+// response (i.e. it's been reported) — most Post Panel opens are on posts that
+// were never reported, so this stays null for the large majority of them.
+let currentModerationDetails = null;
 let chatHistory = [];
 let totalInputTokens = 0;
 let totalOutputTokens = 0;
@@ -89,6 +93,7 @@ export function initPostPanel() {
     chatHistory = [];
     chatMessages.innerHTML = '';
     capturedChatImages = [];
+    currentModerationDetails = null;
     renderChatImages();
   }
 
@@ -171,6 +176,7 @@ export function initPostPanel() {
   // count stops growing instead of trusting one post-expansion read.
   async function getPostWhenSettled(tabId, postId) {
     let post = null;
+    let moderationSummary = null;
     let lastCount = -1;
     let stableReads = 0;
     for (let i = 0; i < 20; i++) {
@@ -178,6 +184,7 @@ export function initPostPanel() {
         .sendMessage({ action: 'getPostById', tabId, postId })
         .catch(() => null);
       if (resp?.post) post = resp.post;
+      if (resp?.moderationSummary) moderationSummary = resp.moderationSummary;
       const count = countComments(post);
       if (count === lastCount && post) {
         if (++stableReads >= 2) break; // ~500ms with no new comments — merges done
@@ -187,7 +194,7 @@ export function initPostPanel() {
       }
       await new Promise(r => setTimeout(r, 250));
     }
-    return post;
+    return { post, moderationSummary };
   }
 
   // `discardChat` is the refresh path: the moderator has already been warned and
@@ -204,7 +211,7 @@ export function initPostPanel() {
     // it doesn't depend on the lastExpandedPostId pointer, which is stale/cleared
     // whenever this post was reopened without a fresh network fetch (see the
     // pollDomPostId comment below for why that happens).
-    const post = await getPostWhenSettled(tabId, postId);
+    const { post, moderationSummary } = await getPostWhenSettled(tabId, postId);
     if (!post) { showReadyPrompt(); previewShown = false; return; }
 
     if (discardChat) await chatStore.clear(postId);
@@ -215,6 +222,7 @@ export function initPostPanel() {
     totalInputTokens = 0;
     totalOutputTokens = 0;
     capturedChatImages = [];
+    currentModerationDetails = moderationSummary ? parseModerationSummary(moderationSummary) : null;
     renderChatImages();
     renderFullPreview(post);
     if (saved) restoreChat(saved);
@@ -554,6 +562,7 @@ export function initPostPanel() {
         markdown: currentMarkdown,
         imageUrls: [...currentImageUrls, ...attachedImages],
         history: chatHistory.slice(0, -1),
+        moderationDetails: currentModerationDetails,
       });
       const answer = resp?.answer || 'No response.';
       typingBubble.innerHTML = renderMarkdownToHtml(answer);

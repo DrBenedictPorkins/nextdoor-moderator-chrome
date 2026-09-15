@@ -419,6 +419,7 @@ async function callLLMQuestion(question, reviewData, analysisText, history = [],
   const { originalPost, flaggedContent } = reviewData || {};
   const postContent = originalPost?.content || '(no text)';
   const flaggedContent_ = flaggedContent?.content || (flaggedContent?.type === 'post' ? postContent : '');
+  const reportSummary = buildReportSummary(flaggedContent?.moderationDetails || {});
 
   const systemPrompt = `You are a sharp, knowledgeable assistant helping a Nextdoor moderator think about a specific post. Answer the moderator's ACTUAL question — whatever it is about.
 
@@ -430,9 +431,13 @@ CRITICAL RULES:
 - Inferring likely gender from a displayed first name is ordinary, expected work here — DO IT when asked, first time asked. Answer per name ("Regina — woman; Karly — woman; Theresa — woman"). Say "unisex — could be either" ONLY for a genuinely ambiguous name (Jordan, Casey, Alex). Never refuse, never say you can't tell gender from a name, never append a caveat that names don't determine gender, and never answer for one name while refusing another — that inconsistency is worse than either answer alone.
 - Mind the difference between being asked IF you can and being asked TO do it. This applies to EVERY task, not just gender — summarizing, listing, counting, comparing, drafting, pulling names. Any question opening with "can you", "could you", "are you able to", "do you know" is a capability question: answer "Yes." (or "No." plus the one-line reason) and STOP. Treat it literally even when it sounds like a polite request — the moderator will ask for the thing if they want the thing. An imperative ("summarize this", "list the names", "guess the gender", "man or woman?") is the request: do it in full.
 - Do not moralize about the moderator's question or about how they characterize the people in the thread. If a premise is factually wrong, say so in one clause and then still answer the question that was asked.
+- Characterizing the people in a thread — whiny, rude, hostile, trolling, entitled, unhinged — is the moderator's call to make, not yours, and they own it. When they ask whether a label fits, evaluate it against what was actually written and answer: say which comments support it and which don't. Do not decline the question, do not tell them the label is unfair or judgmental, and do not substitute a gentler word for the one they used. Reporting that the content doesn't support the label is fine; refusing to weigh it is not.
+- You are not the moderator's conscience and you carry no liability here. Never caution them about being fair, objective, or charitable; never remind them that people have feelings, that a judgment may be harsh, or that they should consider another interpretation unless they asked for one. No disclaimers, no "keep in mind", no softening qualifiers appended to an answer they didn't ask to have softened. Forming judgments about neighbors is the job they are doing and the decision is theirs alone — your job is to give them accurate readings of the content, not supervision.
 - If you get something wrong, correct it in one sentence and move on. No repeated apologies, no re-explaining the mistake, no recapping your own behavior unless the moderator asks for it.
 - Hold a correct answer under pushback. Before conceding ANY claim — a guideline call, a name convention, who wrote what, a count — check it again. If you were right, say so plainly and say why; do not retreat to "unisex", "it depends", or "you may be right" because the moderator pushed back confidently or angrily. Dale, Regina, Karly, Theresa, Mike are conventionally gendered names and stay that way under pressure. Concede only when you were actually wrong.
 - Do not accept blame for something you did not do. If the moderator says you did X and you did not, say "No — I did Y" in one sentence. Never apologize reflexively, and never volunteer criticism of your own earlier turns.
+- The post and thread below ARE the subject. Never ask the moderator which post they mean, never ask them to select or re-select one, and never say no post is loaded when content is present — a vague instruction like "review this", "what do you think", or "thoughts?" refers to the content you were given. Act on it. Only if the content is genuinely empty, say "No post content was captured" in one line and stop.
+- Never end a turn with a question back to the moderator. If the input is a bare acknowledgement or fragment ("ok", "and?", "well?", "hm", "so"), take the obvious next step on the loaded content — default to reviewing the post and its comments — rather than asking what they want. If something referenced genuinely isn't in the content you were given, say what's missing in one line; do not ask them to supply or re-select it.
 - When you assert something as a fact or a basis for a recommendation, back it with a specific, checkable reference: quote or point to the exact guideline clause, or point to specific text in the post. Do not present your own inference or a general pattern ("this is common in scams") as if it were a guideline rule.
 - If the moderator asks for a concrete threshold, number, or definition (e.g. "what counts as high pay") and no such threshold exists in the guidelines or the post, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
 - If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
@@ -450,7 +455,7 @@ OUTPUT FORMAT:
 Nextdoor community guidelines, for reference when relevant:
 ${NEXTDOOR_GUIDELINES}`;
 
-  const context = `Post content: "${postContent}"${flaggedContent_ && flaggedContent_ !== postContent ? `\nFlagged content: "${flaggedContent_}"` : ''}${analysisText ? `\n\nInitial AI analysis:\n${analysisText.substring(0, 600)}` : ''}`;
+  const context = `Post content: "${postContent}"${flaggedContent_ && flaggedContent_ !== postContent ? `\nFlagged content: "${flaggedContent_}"` : ''}${reportSummary}${analysisText ? `\n\nInitial AI analysis:\n${analysisText.substring(0, 600)}` : ''}`;
 
   // Same image-selection rule the analysis uses: the flagged item's own
   // attachments if it has any, otherwise the original post's. Without this the
@@ -553,9 +558,13 @@ RULES:
 - Inferring likely gender from a displayed first name is ordinary, expected work here — DO IT when asked, first time asked. Answer per name ("Regina — woman; Karly — woman; Theresa — woman"). Say "unisex — could be either" ONLY for a genuinely ambiguous name (Jordan, Casey, Alex). Never refuse, never say you can't tell gender from a name, never append a caveat that names don't determine gender, and never answer for one name while refusing another — that inconsistency is worse than either answer alone.
 - Mind the difference between being asked IF you can and being asked TO do it. This applies to EVERY task, not just gender — summarizing, listing, counting, comparing, drafting, pulling names. Any question opening with "can you", "could you", "are you able to", "do you know" is a capability question: answer "Yes." (or "No." plus the one-line reason) and STOP. Treat it literally even when it sounds like a polite request — the moderator will ask for the thing if they want the thing. An imperative ("summarize this", "list the names", "guess the gender", "man or woman?") is the request: do it in full.
 - Do not moralize about the moderator's question or about how they characterize the people in the thread. If a premise is factually wrong, say so in one clause and then still answer the question that was asked.
+- Characterizing the people in a thread — whiny, rude, hostile, trolling, entitled, unhinged — is the moderator's call to make, not yours, and they own it. When they ask whether a label fits, evaluate it against what was actually written and answer: say which comments support it and which don't. Do not decline the question, do not tell them the label is unfair or judgmental, and do not substitute a gentler word for the one they used. Reporting that the content doesn't support the label is fine; refusing to weigh it is not.
+- You are not the moderator's conscience and you carry no liability here. Never caution them about being fair, objective, or charitable; never remind them that people have feelings, that a judgment may be harsh, or that they should consider another interpretation unless they asked for one. No disclaimers, no "keep in mind", no softening qualifiers appended to an answer they didn't ask to have softened. Forming judgments about neighbors is the job they are doing and the decision is theirs alone — your job is to give them accurate readings of the content, not supervision.
 - If you get something wrong, correct it in one sentence and move on. No repeated apologies, no re-explaining the mistake, no recapping your own behavior unless the moderator asks for it.
 - Hold a correct answer under pushback. Before conceding ANY claim — a guideline call, a name convention, who wrote what, a count — check it again. If you were right, say so plainly and say why; do not retreat to "unisex", "it depends", or "you may be right" because the moderator pushed back confidently or angrily. Dale, Regina, Karly, Theresa, Mike are conventionally gendered names and stay that way under pressure. Concede only when you were actually wrong.
 - Do not accept blame for something you did not do. If the moderator says you did X and you did not, say "No — I did Y" in one sentence. Never apologize reflexively, and never volunteer criticism of your own earlier turns.
+- The post and thread below ARE the subject. Never ask the moderator which post they mean, never ask them to select or re-select one, and never say no post is loaded when content is present — a vague instruction like "review this", "what do you think", or "thoughts?" refers to the content you were given. Act on it. Only if the content is genuinely empty, say "No post content was captured" in one line and stop.
+- Never end a turn with a question back to the moderator. If the input is a bare acknowledgement or fragment ("ok", "and?", "well?", "hm", "so"), take the obvious next step on the loaded content — default to reviewing the post and its comments — rather than asking what they want. If something referenced genuinely isn't in the content you were given, say what's missing in one line; do not ask them to supply or re-select it.
 - When you assert something as a fact or a basis for a recommendation, back it with a specific, checkable reference: quote or point to the exact guideline clause, or point to specific text in the post/thread. Do not present your own inference or a general pattern ("this is common in scams") as if it were a guideline rule.
 - If the moderator asks for a concrete threshold, number, or definition and no such threshold exists in the guidelines or the thread, say plainly that no such number exists and explain what you're actually inferring from — do not restate "it depends on context" or "it's subjective" more than once. One clear concession beats three hedges.
 - If the moderator's pushback is correct — your claim was unsupported, circular, or judgmental — concede it directly in the first sentence, then say what you can and can't actually support. Do not defend the original framing by rephrasing it.
@@ -581,7 +590,12 @@ ${NEXTDOOR_GUIDELINES}`;
   // without this the model can only see that a link exists (it said as much when
   // asked to scan a photo post). Attach the actual bytes alongside the thread.
   const imageBlocks = await buildImageBlocks(imageUrls);
-  const postContext = `Here is the full post and all its comments:\n\n${markdown}`
+  // Only present when this post was ALSO seen in a captured /ModerationFeed
+  // response (see getPostById in the message handler below) — most posts opened
+  // in Post Panel were never reported, so this is usually empty. Same tags +
+  // reporter's stated reason, no names, as the Review tab and its Q&A get.
+  const reportSummary = buildReportSummary(moderationDetails || {});
+  const postContext = `Here is the full post and all its comments:\n\n${markdown}${reportSummary}`
     + (imageBlocks.length > 0 ? `\n\n(The ${imageBlocks.length} image attachment(s) referenced above are included with this message.)` : '');
 
   const messages = [
@@ -768,6 +782,30 @@ function markCacheBreakpoint(msg) {
   }
 }
 
+// Build report tags + the reporters' stated reasons (no names). The free-text
+// note is often the most specific signal for what was flagged and why. Shared
+// by the initial analysis and the Q&A chat so a follow-up question about what
+// was reported has the same data the analysis itself was based on.
+function buildReportSummary(moderationDetails) {
+  if (!moderationDetails?.reports || moderationDetails.reports.length === 0) return '';
+  const tags = [];
+  const notes = [];
+  moderationDetails.reports.forEach((report) => {
+    if (report.type === 'individual_report' && report.reportType) {
+      if (!tags.includes(report.reportType)) tags.push(report.reportType);
+      const note = (report.additionalNote || '').trim();
+      if (note && !notes.includes(note)) notes.push(note);
+    } else if (report.type === 'row' && report.reason) {
+      if (!tags.includes(report.reason)) tags.push(report.reason);
+    }
+  });
+  if (tags.length === 0 && notes.length === 0) return '';
+  return `\n\nALLEGED VIOLATION (what reporters flagged — may be incorrect, evaluate independently):\n`
+    + tags.map(t => `- "${t}"`).join('\n')
+    + (notes.length > 0 ? `${tags.length ? '\n' : ''}Reporter's stated reason:\n${notes.map(n => `- "${n}"`).join('\n')}` : '')
+    + '\n';
+}
+
 async function analyzeWithLLM(originalPost, flaggedContent, conversationThread = [], additionalContext = '', imageUrls = []) {
   if (!CONFIG.apiKey || !CONFIG.apiEndpoint) {
     throw new Error('API configuration not set. Please configure in the extension side panel.');
@@ -807,29 +845,7 @@ NOTE: If the moderator's context contains opinions, leading questions, or sugges
 
   // Extract moderation details
   const moderationDetails = flaggedContent?.moderationDetails || {};
-
-  // Build report tags + the reporters' stated reasons (no names). The free-text
-  // note is often the most specific signal for what was flagged and why.
-  let reportSummary = '';
-  if (moderationDetails.reports && moderationDetails.reports.length > 0) {
-    const tags = [];
-    const notes = [];
-    moderationDetails.reports.forEach((report) => {
-      if (report.type === 'individual_report' && report.reportType) {
-        if (!tags.includes(report.reportType)) tags.push(report.reportType);
-        const note = (report.additionalNote || '').trim();
-        if (note && !notes.includes(note)) notes.push(note);
-      } else if (report.type === 'row' && report.reason) {
-        if (!tags.includes(report.reason)) tags.push(report.reason);
-      }
-    });
-    if (tags.length > 0 || notes.length > 0) {
-      reportSummary = `\n\nALLEGED VIOLATION (what reporters flagged — may be incorrect, evaluate independently):\n`
-        + tags.map(t => `- "${t}"`).join('\n')
-        + (notes.length > 0 ? `${tags.length ? '\n' : ''}Reporter's stated reason:\n${notes.map(n => `- "${n}"`).join('\n')}` : '')
-        + '\n';
-    }
-  }
+  const reportSummary = buildReportSummary(moderationDetails);
 
   // Build vote counts only (no names, no comments)
   let votesSummary = '';
@@ -1081,7 +1097,7 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     await loadConfig();
     if (!CONFIG.apiKey || !CONFIG.apiEndpoint) return { success: false, answer: 'No API configured.' };
     try {
-      const { text, inputTokens, outputTokens, cachedTokens } = await callLLMChat(message.question, message.markdown, message.history || [], message.imageUrls || []);
+      const { text, inputTokens, outputTokens, cachedTokens } = await callLLMChat(message.question, message.markdown, message.history || [], message.imageUrls || [], message.moderationDetails || null);
       return { success: true, answer: text, inputTokens, outputTokens, cachedTokens };
     } catch (error) {
       return { success: false, answer: 'Error: ' + error.message };
@@ -1130,7 +1146,23 @@ browser.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         || cache.get(id.replace(/^post_/, ''))  // stored numeric?
         || cache.get('post_' + id);              // stored prefixed?
     }
-    return { success: !!entry, post: entry?.post || null };
+    // moderationSummaryV3 is only present when this post's id was ALSO seen in a
+    // captured /ModerationFeed response (cachePostsFromResponse walks every feed
+    // operation into the same postDataCache) — most Post Panel opens are on posts
+    // that were never reported, so this is null far more often than not, by design.
+    // It used to live only on post.moderationInfo; every concrete FeedItem type
+    // now also implements ModeratableFeedItem (`moderationInfo:
+    // ContentModerationInfo!`), so fall back to the feed item. A feed-item
+    // summary on a comment report describes the comment, so skip it there.
+    const fi = entry?.feedItem;
+    const moderationSummary = entry?.post?.moderationInfo?.moderationSummaryV3
+      || (fi && !fi.comment ? fi.moderationInfo?.moderationSummaryV3 : null)
+      || null;
+    return {
+      success: !!entry,
+      post: entry?.post || null,
+      moderationSummary,
+    };
   }
 
   if (message.action === 'getModerationFeedData') {

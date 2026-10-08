@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
-## [1.3.0]
+## [1.3.0] - 2026-10-08
 
 ### Fixed
 - Reported content no longer falls through to "No flagged content found". Nextdoor turned `FeedItem` into a union (`FeedItemPost`, `FeedItemComment`, `FeedItemTopLineComment`, `FeedItemClassified`, `VideoFeedItem`) and hoisted `moderationInfo` onto the feed item itself via a new `ModeratableFeedItem` interface. The Review tab read only `post.moderationInfo` and scanned `post.comments.pagedComments` for the reported comment, so comment reports registered as nothing flagged. It now reads the feed-item summary as well, and takes the reported comment straight off `feedItem.comment` when it isn't in the page of comments the response carries — which it often isn't on a long thread.

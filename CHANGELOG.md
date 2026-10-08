@@ -12,6 +12,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 ### Added
 - `[Review] SHAPE CHANGE?` console warning when a feed item parses but nothing is flagged anywhere — the signature of a Nextdoor schema change, which is otherwise silent. Logs the `__typename`, both `moderationInfo` key sets, and the comment count.
 - Report tags and the reporters' stated reasons are now passed to the Post Panel chat, not just the Review tab's analysis and Q&A.
+- Model options: Claude Opus 5.5, Claude Sonnet 5.5, and Claude Haiku 5.5, all gated for `output_config.effort` and not sent `temperature`. Haiku 5.5 replaces Haiku 4.5 as the cost-efficient choice; Opus 5, Sonnet 5, Sonnet 4.6 and Haiku 4.5 remain selectable. Verified against the live Anthropic API with the extension's own request shape.
 
 ### Changed
 - Chat prompts answer the literal question asked, hold a correct answer under pushback, don't accept blame for something they didn't do, never end a turn with a question back to the moderator, and don't editorialize on the moderator's characterization of the people in a thread.

@@ -18,10 +18,13 @@ export const PROVIDER_MODELS = {
     { value: 'o4-mini',       label: 'o4-mini (retiring Oct 23, 2026)' },
   ],
   'anthropic': [
-    { value: 'claude-opus-5',     label: 'Claude Opus 5 (flagship)' },
-    { value: 'claude-sonnet-5',   label: 'Claude Sonnet 5 (balanced)' },
+    { value: 'claude-opus-5-5',   label: 'Claude Opus 5.5 (flagship)' },
+    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (balanced)' },
+    { value: 'claude-haiku-5-5',  label: 'Claude Haiku 5.5 (cost-efficient)' },
+    { value: 'claude-opus-5',     label: 'Claude Opus 5' },
+    { value: 'claude-sonnet-5',   label: 'Claude Sonnet 5' },
     { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5 (cost-efficient)' },
+    { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
   ]
 };
 

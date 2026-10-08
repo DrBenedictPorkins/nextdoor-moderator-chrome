@@ -76,6 +76,9 @@ function extractLLMText(data) {
 // it the same way temperature is gated — sending it to a classic chat model 400s.
 // Keep both sets in sync with the model lists in src/sidepanel/settings.js.
 const ANTHROPIC_EFFORT_MODELS = new Set([
+  'claude-opus-5-5',
+  'claude-haiku-5-5',
+  'claude-sonnet-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
